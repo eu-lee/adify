@@ -98,277 +98,486 @@ function InventoryBar({ total }: { total: number | null | undefined }) {
   if (total === null || total === undefined) return null
   const capped = Math.min(total, 100)
   const pct = (capped / 100) * 100
-  const color = total === 0 ? '#3a1a1a' : total < 10 ? 'rgba(251,191,36,0.35)' : 'rgba(255,255,255,0.08)'
-  const fill = total === 0 ? '#5a2020' : total < 10 ? 'rgba(251,191,36,0.7)' : 'rgba(255,255,255,0.18)'
+  const trackColor = total === 0 ? 'rgba(239,68,68,0.2)' : total < 10 ? 'rgba(251,191,36,0.2)' : 'rgba(134,239,172,0.15)'
+  const fillColor = total === 0 ? '#ef4444' : total < 10 ? '#fbbf24' : '#4ade80'
+  const textColor = total === 0 ? '#ef4444' : total < 10 ? '#fbbf24' : '#4ade80'
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '2px' }}>
-      <div style={{ flex: 1, height: '2px', background: color, borderRadius: '2px', overflow: 'hidden' }}>
-        <div style={{ width: `${pct}%`, height: '100%', background: fill, borderRadius: '2px', transition: 'width 0.4s ease' }} />
+      <div style={{ flex: 1, height: '2px', background: trackColor, borderRadius: '2px', overflow: 'hidden' }}>
+        <div style={{ width: '100%', height: '100%', background: fillColor, borderRadius: '2px' }} />
       </div>
-      <span className="font-sans" style={{ fontSize: '0.625rem', color: '#444', fontWeight: 400, whiteSpace: 'nowrap' }}>
+      <span className="font-sans" style={{ fontSize: '0.625rem', color: textColor, fontWeight: 400, whiteSpace: 'nowrap' }}>
         {total === 0 ? 'sold out' : `${total} in stock`}
       </span>
     </div>
   )
 }
 
-// ─── Ad Generation Modal ──────────────────────────────────────────────────────
+// ─── Expanded Ad View ─────────────────────────────────────────────────────────
 
-interface AdModalProps {
+function ExpandedAdView({ product, storeDomain, hasVideo = false, onClose, onAdChange }: {
   product: Product
   storeDomain: string
+  hasVideo?: boolean
   onClose: () => void
-  onSuccess: () => void
-}
-
-function AdModal({ product, storeDomain, onClose, onSuccess }: AdModalProps) {
+  onAdChange?: () => void
+}) {
   const [adType, setAdType] = useState<'narrated' | 'music_only'>('narrated')
   const [duration, setDuration] = useState<15 | 30 | 60>(30)
-  const [videoFile, setVideoFile] = useState<File | null>(null)
-  const [dragOver, setDragOver] = useState(false)
-  const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
+  const [formStatus, setFormStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
   const [errorMsg, setErrorMsg] = useState('')
-  const [result, setResult] = useState<Record<string, unknown> | null>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const productForApi = {
-    title: product.title,
-    description: product.description ?? product.title,
-    price: product.price ?? '$0',
+  // B-roll state
+  const [brollLibrary, setBrollLibrary] = useState<{ name: string; url: string }[]>([])
+  const [brollLibraryLoading, setBrollLibraryLoading] = useState(true)
+  const [selectedBroll, setSelectedBroll] = useState<{ name: string; url: string } | null>(null)
+  const [previewClip, setPreviewClip] = useState<{ name: string; url: string } | null>(null)
+  const [brollProgress, setBrollProgress] = useState<number | null>(null)
+  const [brollError, setBrollError] = useState<string | null>(null)
+  const brollInputRef = useRef<HTMLInputElement>(null)
+
+  const raw = String(product.id)
+  const numericId = raw.includes('/') ? raw.split('/').pop()! : raw
+
+  async function refreshBrollLibrary(selectName?: string) {
+    const { data: files } = await supabase.storage.from('broll').list()
+    const productFiles = (files ?? []).filter(f => f.name === numericId || f.name.startsWith(`${numericId}_`))
+    if (!productFiles.length) { setBrollLibrary([]); setBrollLibraryLoading(false); return }
+    const urls = await Promise.all(
+      productFiles.map(async (f) => {
+        const { data } = await supabase.storage.from('broll').createSignedUrl(f.name, 3600)
+        return data?.signedUrl ? { name: f.name, url: data.signedUrl } : null
+      })
+    )
+    const library = urls.filter(Boolean) as { name: string; url: string }[]
+    setBrollLibrary(library)
+    if (selectName) {
+      const match = library.find(f => f.name === selectName)
+      if (match) setSelectedBroll(match)
+    } else if (!selectedBroll) {
+      // auto-select the one matching this product if it exists
+      const match = library.find(f => f.name === numericId)
+      if (match) setSelectedBroll(match)
+    }
+    setBrollLibraryLoading(false)
   }
+
+  useEffect(() => { refreshBrollLibrary() }, [numericId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleBrollUpload(file: File) {
+    if (!file.type.startsWith('video/')) return
+    setBrollError(null)
+    setBrollProgress(0)
+    const uploadName = `${numericId}_${Date.now()}`
+
+    let fake = 0
+    const interval = setInterval(() => {
+      fake = Math.min(fake + Math.random() * 18, 90)
+      setBrollProgress(Math.round(fake))
+    }, 250)
+
+    const { error } = await supabase.storage.from('broll').upload(uploadName, file)
+    clearInterval(interval)
+
+    if (error) {
+      setBrollError(error.message)
+      setBrollProgress(null)
+      return
+    }
+
+    setBrollProgress(100)
+    await refreshBrollLibrary(uploadName)
+    setTimeout(() => setBrollProgress(null), 400)
+  }
+
+  // Load stored ad analytics
+  const storedAd = getStoreAds(storeDomain)[product.id] as Record<string, unknown> | undefined
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!videoFile) return
-
-    setStatus('loading')
+    if (!selectedBroll) return
+    setFormStatus('loading')
     setErrorMsg('')
-
     try {
+      const videoRes = await fetch(selectedBroll.url)
+      const videoBlob = await videoRes.blob()
       const fd = new FormData()
-      fd.append('video', videoFile)
-      fd.append('product', JSON.stringify(productForApi))
+      fd.append('video', videoBlob, `${numericId}.mp4`)
+      fd.append('product', JSON.stringify({ title: product.title, description: product.description ?? product.title, price: product.price ?? '$0' }))
       fd.append('adType', adType)
       fd.append('duration', String(duration))
-
       const res = await fetch('/api/analyze-video', { method: 'POST', body: fd })
       const data = await res.json()
-
       if (!res.ok) throw new Error(data.error ?? `Server error ${res.status}`)
-
-      saveAd(storeDomain, product.id, {
-        productTitle: product.title,
-        adType,
-        duration,
-        ...data,
-      })
-
-      setResult(data)
-      setStatus('done')
-      onSuccess()
+      saveAd(storeDomain, product.id, { productTitle: product.title, adType, duration, ...data })
+      setFormStatus('done')
+      onAdChange?.()
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err))
-      setStatus('error')
+      setFormStatus('error')
     }
   }
 
-  function handleDrop(e: React.DragEvent) {
-    e.preventDefault()
-    setDragOver(false)
-    const file = e.dataTransfer.files[0]
-    if (file?.type.startsWith('video/')) setVideoFile(file)
-  }
-
   const pill = (label: string, active: boolean, onClick: () => void) => (
-    <button
-      key={label}
-      type="button"
-      onClick={onClick}
-      className="font-sans"
-      style={{
-        background: active ? 'rgba(255,255,255,0.1)' : 'transparent',
-        border: `1px solid ${active ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.07)'}`,
-        borderRadius: '8px', padding: '7px 16px',
-        fontSize: '0.75rem', fontWeight: active ? 500 : 300,
-        color: active ? '#fff' : '#555', cursor: 'pointer', transition: 'all 0.2s',
-      }}
-    >
-      {label}
-    </button>
+    <button key={label} type="button" onClick={onClick} className="font-sans" style={{
+      background: active ? 'rgba(255,255,255,0.1)' : 'transparent',
+      border: `1px solid ${active ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.07)'}`,
+      borderRadius: '8px', padding: '7px 16px', fontSize: '0.75rem',
+      fontWeight: active ? 500 : 300, color: active ? '#fff' : '#555',
+      cursor: 'pointer', transition: 'all 0.2s',
+    }}>{label}</button>
   )
 
+  const analyticsData = storedAd ?? {}
+  const mood = analyticsData.mood as string | undefined
+  const bpm = analyticsData.bpm as number | undefined
+  const adTypeSaved = analyticsData.adType as string | undefined
+  const durationSaved = analyticsData.duration as number | undefined
+  const sentences = (analyticsData.sentences as unknown[])?.length
+  const cuts = (analyticsData.cuts as unknown[])?.length
+  const hasSpeech = (analyticsData.audioAnalysis as Record<string, unknown>)?.hasSpeech
+  const generatedAt = analyticsData.generatedAt as string | undefined
+
   return (
-    <div
-      onClick={onClose}
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, padding: '24px' }}
-    >
-      <div
-        onClick={e => e.stopPropagation()}
-        style={{ background: '#111', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', padding: '32px', width: '100%', maxWidth: '480px', display: 'flex', flexDirection: 'column', gap: '24px' }}
+    <>
+    <div style={{ display: 'flex', background: '#111', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '12px', overflow: 'hidden', minHeight: '520px', position: 'relative' }}>
+      {/* Close button */}
+      <button
+        onClick={onClose}
+        style={{ position: 'absolute', top: '16px', right: '16px', zIndex: 10, background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '50%', width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#666', fontSize: '1rem', lineHeight: 1, transition: 'color 0.2s, border-color 0.2s' }}
+        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = '#ccc'; (e.currentTarget as HTMLElement).style.borderColor = 'rgba(255,255,255,0.2)' }}
+        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = '#666'; (e.currentTarget as HTMLElement).style.borderColor = 'rgba(255,255,255,0.08)' }}
       >
-        {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
-          <div>
-            <p className="font-sans" style={{ fontSize: '0.6875rem', color: '#444', fontWeight: 300, letterSpacing: '0.08em', textTransform: 'uppercase', margin: '0 0 4px' }}>Generate Ad</p>
-            <h2 className="font-sans" style={{ fontSize: '1rem', fontWeight: 500, color: '#fff', margin: 0, lineHeight: 1.3 }}>{product.title}</h2>
+        ×
+      </button>
+
+      {/* Left: image */}
+      <div style={{ width: '380px', flexShrink: 0, position: 'relative', background: '#0f0f0f' }}>
+        {product.image ? (
+          <img src={product.image} alt={product.title} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+        ) : (
+          <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <span style={{ fontSize: '0.7rem', color: '#333' }}>No image</span>
           </div>
-          <button
-            onClick={onClose}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#444', fontSize: '1.25rem', lineHeight: 1, padding: '0 0 0 16px', transition: 'color 0.2s' }}
-            onMouseEnter={e => ((e.target as HTMLElement).style.color = '#888')}
-            onMouseLeave={e => ((e.target as HTMLElement).style.color = '#444')}
-          >
-            ×
-          </button>
-        </div>
+        )}
+      </div>
 
-        {status === 'done' && result ? (
-          // ── Success state ──
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'rgba(251,191,36,0.8)', boxShadow: '0 0 8px rgba(251,191,36,0.5)', flexShrink: 0 }} />
-              <span className="font-sans" style={{ fontSize: '0.875rem', color: 'rgba(251,191,36,0.85)', fontWeight: 400 }}>Analysis complete</span>
+      {/* Right panel */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflowY: 'auto' }}>
+
+        {/* ── Bestsellers — Audio Analytics ── */}
+        {(
+          <div style={{ padding: '28px 36px', borderBottom: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'rgba(251,191,36,0.8)', boxShadow: '0 0 6px rgba(251,191,36,0.4)', flexShrink: 0 }} />
+              <span className="font-sans" style={{ fontSize: '0.625rem', fontWeight: 500, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(251,191,36,0.7)' }}>
+                Bestsellers — Audio Analytics
+              </span>
+              {generatedAt && (
+                <span className="font-sans" style={{ fontSize: '0.625rem', color: '#333', fontWeight: 300, marginLeft: 'auto' }}>
+                  {new Date(generatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                </span>
+              )}
             </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '8px' }}>
               {[
-                ['Mood', String(result.mood)],
-                ['BPM', String(result.bpm)],
-                adType === 'narrated'
-                  ? ['Sentences', String((result.sentences as unknown[])?.length ?? 0)]
-                  : ['Cuts', String((result.cuts as unknown[])?.length ?? 0)],
-                ['Has Speech', String((result.audioAnalysis as Record<string, unknown>)?.hasSpeech ?? false)],
-              ].map(([label, value]) => (
-                <div key={label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '8px', padding: '10px 14px' }}>
-                  <p className="font-sans" style={{ fontSize: '0.5625rem', color: '#444', fontWeight: 400, letterSpacing: '0.1em', textTransform: 'uppercase', margin: '0 0 3px' }}>{label}</p>
-                  <p className="font-sans" style={{ fontSize: '0.9375rem', color: '#ccc', fontWeight: 400, margin: 0, textTransform: 'capitalize' }}>{value}</p>
+                { label: 'Mood', value: mood ?? '—' },
+                { label: 'BPM', value: bpm != null ? String(bpm) : '—' },
+                { label: 'Ad Type', value: adTypeSaved ?? '—' },
+                { label: 'Duration', value: durationSaved != null ? `${durationSaved}s` : '—' },
+                { label: adTypeSaved === 'narrated' ? 'Sentences' : 'Cuts', value: adTypeSaved === 'narrated' ? (sentences != null ? String(sentences) : '—') : (cuts != null ? String(cuts) : '—') },
+                { label: 'Has Speech', value: hasSpeech != null ? (hasSpeech ? 'Yes' : 'No') : '—' },
+              ].map(({ label, value }) => (
+                <div key={label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '8px', padding: '10px 12px' }}>
+                  <p className="font-sans" style={{ fontSize: '0.5rem', color: '#444', fontWeight: 500, letterSpacing: '0.1em', textTransform: 'uppercase', margin: '0 0 4px' }}>{label}</p>
+                  <p className="font-sans" style={{ fontSize: '0.875rem', color: '#bbb', fontWeight: 400, margin: 0, textTransform: 'capitalize' }}>{value}</p>
                 </div>
               ))}
             </div>
-
-            {adType === 'narrated' && !!result.voice && (
-              <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '8px', padding: '10px 14px' }}>
-                <p className="font-sans" style={{ fontSize: '0.5625rem', color: '#444', fontWeight: 400, letterSpacing: '0.1em', textTransform: 'uppercase', margin: '0 0 3px' }}>Voice ID</p>
-                <p className="font-sans" style={{ fontSize: '0.75rem', color: '#777', fontWeight: 400, margin: 0, fontFamily: 'monospace' }}>
-                  {String((result.voice as Record<string, unknown>).elevenlabs_voice_id)}
-                </p>
-              </div>
-            )}
-
-            <button
-              onClick={onClose}
-              className="btn-primary font-sans"
-              style={{ marginTop: '4px' }}
-            >
-              Done
-            </button>
           </div>
-        ) : (
-          // ── Form state ──
-          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+        )}
 
-            {/* Video upload */}
-            <div>
-              <p className="font-sans" style={{ fontSize: '0.6875rem', color: '#555', fontWeight: 400, letterSpacing: '0.08em', textTransform: 'uppercase', margin: '0 0 8px' }}>Video</p>
+        {/* ── B-Roll ── */}
+        <div style={{ padding: '22px 36px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
+            <span className="font-sans" style={{ fontSize: '0.625rem', fontWeight: 500, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#555' }}>
+              B-Roll
+            </span>
+            {selectedBroll && (
+              <>
+                <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'rgba(134,239,172,0.8)', boxShadow: '0 0 5px rgba(134,239,172,0.4)', flexShrink: 0 }} />
+                <span className="font-sans" style={{ fontSize: '0.625rem', color: '#444', fontWeight: 300 }}>click to preview</span>
+              </>
+            )}
+          </div>
+
+          {brollLibraryLoading ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Spinner size={12} color="rgba(255,255,255,0.1)" topColor="rgba(255,255,255,0.3)" />
+              <span className="font-sans" style={{ fontSize: '0.75rem', color: '#333', fontWeight: 300 }}>Loading library…</span>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+              {brollLibrary.map((clip) => (
+                <div
+                  key={clip.name}
+                  onClick={() => setPreviewClip(clip)}
+                  style={{
+                    position: 'relative', cursor: 'pointer', borderRadius: '6px', overflow: 'hidden', flexShrink: 0,
+                    outline: selectedBroll?.name === clip.name ? '2px solid rgba(255,255,255,0.9)' : '2px solid transparent',
+                    transition: 'outline-color 0.2s',
+                  }}
+                >
+                  <video
+                    src={clip.url}
+                    style={{ width: '110px', height: '68px', objectFit: 'cover', display: 'block', background: '#0f0f0f' }}
+                    muted
+                    preload="metadata"
+                    onLoadedMetadata={e => { (e.currentTarget as HTMLVideoElement).currentTime = 0.1 }}
+                  />
+                  {selectedBroll?.name === clip.name && (
+                    <div style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
+                      <span style={{ fontSize: '0.6rem', color: '#fff', background: 'rgba(0,0,0,0.6)', borderRadius: '4px', padding: '2px 6px', fontFamily: "'DM Sans', sans-serif", fontWeight: 500 }}>Selected</span>
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              {/* Upload new tile */}
               <div
-                onClick={() => fileInputRef.current?.click()}
-                onDragOver={e => { e.preventDefault(); setDragOver(true) }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={handleDrop}
+                onClick={() => brollInputRef.current?.click()}
                 style={{
-                  border: `1.5px dashed ${dragOver ? 'rgba(255,255,255,0.3)' : videoFile ? 'rgba(251,191,36,0.3)' : 'rgba(255,255,255,0.1)'}`,
-                  borderRadius: '10px', padding: '24px', cursor: 'pointer',
-                  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px',
-                  background: dragOver ? 'rgba(255,255,255,0.03)' : 'transparent',
-                  transition: 'all 0.2s',
+                  width: '110px', height: '68px', borderRadius: '6px', flexShrink: 0,
+                  border: '1.5px dashed rgba(255,255,255,0.1)', cursor: 'pointer',
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px',
+                  background: 'transparent', transition: 'border-color 0.2s',
                 }}
+                onMouseEnter={e => ((e.currentTarget as HTMLElement).style.borderColor = 'rgba(255,255,255,0.25)')}
+                onMouseLeave={e => ((e.currentTarget as HTMLElement).style.borderColor = 'rgba(255,255,255,0.1)')}
               >
-                <span style={{ color: videoFile ? 'rgba(251,191,36,0.7)' : '#333' }}>
-                  <UploadIcon />
-                </span>
-                <span className="font-sans" style={{ fontSize: '0.8125rem', color: videoFile ? 'rgba(251,191,36,0.85)' : '#555', fontWeight: 300, textAlign: 'center' }}>
-                  {videoFile ? videoFile.name : 'Drop video or click to browse'}
-                </span>
-                {videoFile && (
-                  <span className="font-sans" style={{ fontSize: '0.6875rem', color: '#444', fontWeight: 300 }}>
-                    {(videoFile.size / 1024 / 1024).toFixed(1)} MB
-                  </span>
+                {brollProgress !== null ? (
+                  <div style={{ width: '80%', display: 'flex', flexDirection: 'column', gap: '5px', alignItems: 'center' }}>
+                    <span className="font-sans" style={{ fontSize: '0.5625rem', color: '#555', fontWeight: 300 }}>{brollProgress}%</span>
+                    <div style={{ width: '100%', height: '2px', background: 'rgba(255,255,255,0.06)', borderRadius: '2px', overflow: 'hidden' }}>
+                      <div style={{ width: `${brollProgress}%`, height: '100%', background: 'rgba(255,255,255,0.3)', borderRadius: '2px', transition: 'width 0.15s ease' }} />
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <span style={{ color: '#333' }}><UploadIcon /></span>
+                    <span className="font-sans" style={{ fontSize: '0.5625rem', color: '#444', fontWeight: 300 }}>Upload new</span>
+                  </>
                 )}
               </div>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="video/*"
-                style={{ display: 'none' }}
-                onChange={e => setVideoFile(e.target.files?.[0] ?? null)}
-              />
             </div>
+          )}
 
-            {/* Ad type */}
-            <div>
-              <p className="font-sans" style={{ fontSize: '0.6875rem', color: '#555', fontWeight: 400, letterSpacing: '0.08em', textTransform: 'uppercase', margin: '0 0 8px' }}>Ad Type</p>
-              <div style={{ display: 'flex', gap: '6px' }}>
-                {pill('Narrated', adType === 'narrated', () => setAdType('narrated'))}
-                {pill('Music Only', adType === 'music_only', () => setAdType('music_only'))}
-              </div>
-            </div>
+          <input ref={brollInputRef} type="file" accept="video/*" style={{ display: 'none' }} onChange={e => { const f = e.target.files?.[0]; if (f) handleBrollUpload(f) }} />
+          {brollError && (
+            <p className="font-sans" style={{ fontSize: '0.6875rem', color: 'rgba(251,113,133,0.85)', fontWeight: 300, margin: '10px 0 0' }}>{brollError}</p>
+          )}
+        </div>
 
-            {/* Duration */}
-            <div>
-              <p className="font-sans" style={{ fontSize: '0.6875rem', color: '#555', fontWeight: 400, letterSpacing: '0.08em', textTransform: 'uppercase', margin: '0 0 8px' }}>Duration</p>
-              <div style={{ display: 'flex', gap: '6px' }}>
-                {([15, 30, 60] as const).map(d => pill(`${d}s`, duration === d, () => setDuration(d)))}
-              </div>
-            </div>
+        {/* ── Product info + form ── */}
+        <div style={{ flex: 1, padding: '28px 48px 28px 36px', display: 'flex', gap: '32px' }}>
 
-            {/* Error */}
-            {status === 'error' && errorMsg && (
-              <p className="font-sans" style={{ fontSize: '0.75rem', color: 'rgba(251,113,133,0.85)', fontWeight: 300, margin: 0 }}>
-                {errorMsg}
-              </p>
-            )}
-
-            {/* Submit */}
-            <button
-              type="submit"
-              disabled={!videoFile || status === 'loading'}
-              className="btn-primary font-sans"
-              style={{ opacity: !videoFile || status === 'loading' ? 0.5 : 1, cursor: !videoFile || status === 'loading' ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
-            >
-              {status === 'loading' ? (
-                <><Spinner /> Analyzing video…</>
-              ) : (
-                'Analyze Video →'
+          {/* Left: product info + form */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '24px', minWidth: 0 }}>
+            {/* Header */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              {product.category && (
+                <span className="font-sans" style={{ fontSize: '0.5625rem', fontWeight: 400, letterSpacing: '0.12em', textTransform: 'uppercase', color: '#444' }}>
+                  {product.category}
+                </span>
               )}
-            </button>
+              <h2 className="font-sans" style={{ fontSize: '1.125rem', fontWeight: 500, color: '#fff', margin: 0, lineHeight: 1.3 }}>
+                {product.title}
+              </h2>
+              {product.price && (
+                <span className="font-sans" style={{ fontSize: '0.8125rem', color: '#555', fontWeight: 300 }}>{product.price}</span>
+              )}
+            </div>
 
-            {status === 'loading' && (
-              <p className="font-sans" style={{ fontSize: '0.6875rem', color: '#333', fontWeight: 300, margin: '-12px 0 0', textAlign: 'center' }}>
-                Gemini is watching your video — this takes 20–60s
-              </p>
+            {/* Form */}
+            {formStatus === 'done' ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'rgba(251,191,36,0.8)', boxShadow: '0 0 6px rgba(251,191,36,0.4)', flexShrink: 0 }} />
+                  <span className="font-sans" style={{ fontSize: '0.8125rem', color: 'rgba(251,191,36,0.8)', fontWeight: 400 }}>Ad generated successfully</span>
+                </div>
+                <button onClick={onClose} className="btn-primary font-sans" style={{ alignSelf: 'flex-start' }}>Done</button>
+              </div>
+            ) : (
+              <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                <div style={{ display: 'flex', gap: '32px', flexWrap: 'wrap' }}>
+                  <div>
+                    <p className="font-sans" style={{ fontSize: '0.6875rem', color: '#555', fontWeight: 400, letterSpacing: '0.08em', textTransform: 'uppercase', margin: '0 0 8px' }}>Ad Type</p>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      {pill('Narrated', adType === 'narrated', () => setAdType('narrated'))}
+                      {pill('Music Only', adType === 'music_only', () => setAdType('music_only'))}
+                    </div>
+                  </div>
+                  <div>
+                    <p className="font-sans" style={{ fontSize: '0.6875rem', color: '#555', fontWeight: 400, letterSpacing: '0.08em', textTransform: 'uppercase', margin: '0 0 8px' }}>Duration</p>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      {([15, 30, 60] as const).map(d => pill(`${d}s`, duration === d, () => setDuration(d)))}
+                    </div>
+                  </div>
+                </div>
+
+                {formStatus === 'error' && errorMsg && (
+                  <p className="font-sans" style={{ fontSize: '0.75rem', color: 'rgba(251,113,133,0.85)', fontWeight: 300, margin: 0 }}>{errorMsg}</p>
+                )}
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                  <button
+                    type="submit"
+                    disabled={!selectedBroll || formStatus === 'loading'}
+                    className="btn-primary font-sans"
+                    style={{ opacity: !selectedBroll || formStatus === 'loading' ? 0.5 : 1, cursor: !selectedBroll || formStatus === 'loading' ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
+                  >
+                    {formStatus === 'loading' ? <><Spinner /> Analyzing video…</> : 'Generate Ad →'}
+                  </button>
+                  {formStatus === 'loading' && (
+                    <span className="font-sans" style={{ fontSize: '0.6875rem', color: '#333', fontWeight: 300 }}>Gemini is watching your video — this takes 20–60s</span>
+                  )}
+                </div>
+              </form>
             )}
-          </form>
-        )}
+          </div>
+
+          {/* Right: trend graph */}
+          {(() => {
+            const W = 420, H = 180, pad = { t: 12, r: 4, b: 28, l: 4 }
+            const cW = W - pad.l - pad.r
+            const cH = H - pad.t - pad.b
+            // Sample sales trend data (8 weeks)
+            const sales = [28, 41, 35, 58, 47, 72, 63, 80]
+            const views = [60, 72, 55, 78, 68, 88, 75, 92]
+            const labels = ['W1','W2','W3','W4','W5','W6','W7','W8']
+            const maxV = 100
+            const toX = (i: number) => pad.l + (i / (sales.length - 1)) * cW
+            const toY = (v: number) => pad.t + cH - (v / maxV) * cH
+            const linePath = (pts: number[]) =>
+              pts.map((v, i) => `${i === 0 ? 'M' : 'L'} ${toX(i).toFixed(1)} ${toY(v).toFixed(1)}`).join(' ')
+            const smoothPath = (pts: number[]) => {
+              let d = `M ${toX(0).toFixed(1)} ${toY(pts[0]).toFixed(1)}`
+              for (let i = 1; i < pts.length; i++) {
+                const x0 = toX(i - 1), y0 = toY(pts[i - 1])
+                const x1 = toX(i), y1 = toY(pts[i])
+                const cx = (x0 + x1) / 2
+                d += ` C ${cx.toFixed(1)} ${y0.toFixed(1)}, ${cx.toFixed(1)} ${y1.toFixed(1)}, ${x1.toFixed(1)} ${y1.toFixed(1)}`
+              }
+              return d
+            }
+            const salesPath = smoothPath(sales)
+            const viewsPath = smoothPath(views)
+            const salesFill = salesPath + ` L ${toX(sales.length - 1).toFixed(1)} ${(pad.t + cH).toFixed(1)} L ${toX(0).toFixed(1)} ${(pad.t + cH).toFixed(1)} Z`
+            return (
+              <div style={{ width: `${W}px`, flexShrink: 0, paddingLeft: '28px', borderLeft: '1px solid rgba(255,255,255,0.05)', display: 'flex', flexDirection: 'column', gap: '10px', minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span className="font-sans" style={{ fontSize: '0.5rem', color: '#888', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 500 }}>Sales Trend</span>
+                  <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <span style={{ width: '12px', height: '1.5px', background: 'rgba(134,239,172,0.7)', display: 'inline-block', borderRadius: '1px' }} />
+                      <span className="font-sans" style={{ fontSize: '0.5rem', color: '#666', fontWeight: 300 }}>Sales</span>
+                    </span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <span style={{ width: '12px', height: '1.5px', background: 'rgba(148,163,184,0.5)', display: 'inline-block', borderRadius: '1px', borderTop: '1px dashed rgba(148,163,184,0.5)' }} />
+                      <span className="font-sans" style={{ fontSize: '0.5rem', color: '#666', fontWeight: 300 }}>Views</span>
+                    </span>
+                  </div>
+                </div>
+                <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ overflow: 'visible' }}>
+                  <defs>
+                    <linearGradient id="salesGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="rgba(134,239,172,0.15)" />
+                      <stop offset="100%" stopColor="rgba(134,239,172,0)" />
+                    </linearGradient>
+                  </defs>
+                  {/* Grid lines */}
+                  {[0.25, 0.5, 0.75, 1].map(f => (
+                    <line key={f} x1={pad.l} y1={pad.t + cH * (1 - f)} x2={pad.l + cW} y2={pad.t + cH * (1 - f)}
+                      stroke="rgba(255,255,255,0.03)" strokeWidth="1" />
+                  ))}
+                  {/* Fill */}
+                  <path d={salesFill} fill="url(#salesGrad)" />
+                  {/* Views line (dashed) */}
+                  <path d={viewsPath} fill="none" stroke="rgba(148,163,184,0.25)" strokeWidth="1.5" strokeDasharray="4 4" />
+                  {/* Sales line */}
+                  <path d={salesPath} fill="none" stroke="rgba(134,239,172,0.7)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  {/* Dots */}
+                  {sales.map((v, i) => (
+                    <circle key={i} cx={toX(i)} cy={toY(v)} r="3" fill="rgba(134,239,172,0.85)" />
+                  ))}
+                  {/* X labels */}
+                  {labels.map((l, i) => (
+                    <text key={i} x={toX(i)} y={H - 6} textAnchor="middle" fill="#555" fontSize="7" fontFamily="DM Sans, sans-serif">{l}</text>
+                  ))}
+                </svg>
+              </div>
+            )
+          })()}
+        </div>
       </div>
     </div>
+
+    {/* B-roll preview popup */}
+
+    {previewClip && (
+      <div
+        onClick={() => setPreviewClip(null)}
+        style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: '32px', animation: 'fadeIn 0.2s ease forwards' }}
+      >
+        <div
+          onClick={e => e.stopPropagation()}
+          style={{ display: 'flex', flexDirection: 'column', gap: '16px', width: '100%', maxWidth: '720px', animation: 'fadeSlideUp 0.25s ease forwards' }}
+        >
+          <video
+            src={previewClip.url}
+            style={{ width: '100%', borderRadius: '10px', background: '#0a0a0a', display: 'block', maxHeight: '60vh', objectFit: 'contain' }}
+            controls
+            autoPlay
+            muted
+          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <button
+              onClick={() => { setSelectedBroll(previewClip); setPreviewClip(null) }}
+              className="btn-primary font-sans"
+              style={{ flex: 1 }}
+            >
+              {selectedBroll?.name === previewClip.name ? 'Selected ✓' : 'Use this clip'}
+            </button>
+            <button
+              onClick={() => setPreviewClip(null)}
+              className="font-sans"
+              style={{ background: 'none', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '10px', padding: '10px 20px', color: '#555', fontSize: '0.8125rem', cursor: 'pointer', transition: 'color 0.2s', fontWeight: 300 }}
+              onMouseEnter={e => ((e.currentTarget as HTMLElement).style.color = '#999')}
+              onMouseLeave={e => ((e.currentTarget as HTMLElement).style.color = '#555')}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   )
 }
 
 // ─── Product Card ─────────────────────────────────────────────────────────────
 
-function ProductCard({ product, rank, hasStorefrontData, storeDomain, onGenerateAd, onAdChange }: {
-  product: Product;
-  rank: number;
-  hasStorefrontData: boolean;
-  storeDomain: string;
-  onGenerateAd: (product: Product) => void;
-  onAdChange?: () => void;
+function ProductCard({ product, rank, hasStorefrontData, storeDomain, onExpand, onAdChange }: {
+  product: Product
+  rank: number
+  hasStorefrontData: boolean
+  storeDomain: string
+  onExpand: (product: Product) => void
+  onAdChange?: () => void
 }) {
   const [hovered, setHovered] = useState(false)
-  const [adHovered, setAdHovered] = useState(false)
   const [adExists, setAdExists] = useState(() => hasAd(storeDomain, product.id))
 
-  // Re-sync when parent notifies of ad changes
   useEffect(() => {
     setAdExists(hasAd(storeDomain, product.id))
   }, [storeDomain, product.id])
@@ -380,8 +589,14 @@ function ProductCard({ product, rank, hasStorefrontData, storeDomain, onGenerate
     onAdChange?.()
   }
 
+  function handleCardClick(e: React.MouseEvent) {
+    // Don't expand if clicking the Remove button (handled by stopPropagation there)
+    if (isSoldOut || adExists) return
+    onExpand(product)
+  }
+
   const isBestSeller = hasStorefrontData && rank <= 3
-  const isLowStock = hasStorefrontData && product.totalInventory !== null && product.totalInventory !== undefined && product.totalInventory > 0 && product.totalInventory < 10
+  const isLowStock = hasStorefrontData && product.totalInventory !== null && product.totalInventory !== undefined && product.totalInventory > 0 && product.totalInventory < 5
   const isSoldOut = hasStorefrontData && product.availableForSale === false
   const isOnSale = product.onSale && product.compareAtPrice
 
@@ -390,7 +605,8 @@ function ProductCard({ product, rank, hasStorefrontData, storeDomain, onGenerate
       className="card-product"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      style={{ display: 'flex', flexDirection: 'column', opacity: isSoldOut ? 0.5 : 1 }}
+      onClick={() => !isSoldOut && !adExists && onExpand(product)}
+      style={{ display: 'flex', flexDirection: 'column', opacity: isSoldOut ? 0.5 : 1, cursor: isSoldOut || adExists ? 'default' : 'pointer' }}
     >
       {/* Image */}
       <div style={{ width: '100%', aspectRatio: '6/5', overflow: 'hidden', background: '#0f0f0f', flexShrink: 0, position: 'relative' }}>
@@ -406,11 +622,10 @@ function ProductCard({ product, rank, hasStorefrontData, storeDomain, onGenerate
             <span style={{ fontSize: '0.7rem', color: '#333', fontFamily: "'DM Sans', sans-serif" }}>No image</span>
           </div>
         )}
-
         <div style={{ position: 'absolute', top: '10px', left: '10px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-          {isBestSeller && <Badge color="rgba(251,191,36,0.15)" textColor="rgba(251,191,36,0.9)">#{rank} Best Seller</Badge>}
+          {isBestSeller && <Badge color="rgba(0,0,0,0.85)" textColor="rgba(255,255,255,0.85)">#{rank} Best Seller</Badge>}
           {isSoldOut && <Badge color="rgba(80,20,20,0.8)" textColor="#f87171">Sold Out</Badge>}
-          {isLowStock && !isSoldOut && <Badge color="rgba(80,50,10,0.8)" textColor="rgba(251,191,36,0.85)">Low Stock</Badge>}
+          {isLowStock && !isSoldOut && <Badge color="rgba(127,29,29,0.8)" textColor="rgba(252,165,165,0.9)">Low Stock</Badge>}
         </div>
         {isOnSale && (
           <div style={{ position: 'absolute', top: '10px', right: '10px' }}>
@@ -480,32 +695,19 @@ function ProductCard({ product, rank, hasStorefrontData, storeDomain, onGenerate
             </button>
           </div>
         ) : (
-          <button
-            onMouseEnter={() => setAdHovered(true)}
-            onMouseLeave={() => setAdHovered(false)}
-            onClick={() => onGenerateAd(product)}
-            disabled={isSoldOut}
-            style={{
-              background: 'transparent', border: 'none', padding: 0,
-              cursor: isSoldOut ? 'not-allowed' : 'pointer',
-              display: 'flex', alignItems: 'center', gap: '6px',
-              fontFamily: "'DM Sans', sans-serif", fontSize: '0.8125rem', fontWeight: 400,
-              color: adHovered && !isSoldOut ? '#fff' : '#444',
-              transition: 'color 0.25s', letterSpacing: '0.01em',
-            }}
-          >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: hovered && !isSoldOut ? '#fff' : '#444', transition: 'color 0.25s', fontFamily: "'DM Sans', sans-serif", fontSize: '0.8125rem', fontWeight: 400, letterSpacing: '0.01em' }}>
             <span style={{
               width: '20px', height: '20px', borderRadius: '50%',
-              border: `1px solid ${adHovered && !isSoldOut ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.1)'}`,
+              border: `1px solid ${hovered && !isSoldOut ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.1)'}`,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               flexShrink: 0, transition: 'border-color 0.25s',
             }}>
-              <svg width="7" height="7" viewBox="0 0 8 8" fill={adHovered && !isSoldOut ? '#fff' : '#555'} style={{ transition: 'fill 0.25s', marginLeft: '1px' }}>
+              <svg width="7" height="7" viewBox="0 0 8 8" fill={hovered && !isSoldOut ? '#fff' : '#555'} style={{ transition: 'fill 0.25s', marginLeft: '1px' }}>
                 <polygon points="0,0 8,4 0,8" />
               </svg>
             </span>
             Generate Ad
-          </button>
+          </div>
         )}
       </div>
     </div>
@@ -539,9 +741,21 @@ export default function ProductLibrary() {
   const [adCount, setAdCount] = useState(0)
   const [hasVideoMap, setHasVideoMap] = useState<Record<string, boolean>>({})
   const [videoFilter, setVideoFilter] = useState<'all' | 'has_video' | 'no_video'>('all')
+  const [expandedProduct, setExpandedProduct] = useState<Product | null>(null)
+  const [isClosing, setIsClosing] = useState(false)
 
-  // Modal state
-  const [modalProduct, setModalProduct] = useState<Product | null>(null)
+  function openExpanded(product: Product) {
+    setIsClosing(false)
+    setExpandedProduct(product)
+  }
+
+  function closeExpanded() {
+    setIsClosing(true)
+    setTimeout(() => {
+      setExpandedProduct(null)
+      setIsClosing(false)
+    }, 280)
+  }
 
   useEffect(() => {
     if (storeData?.products) setProducts(storeData.products)
@@ -615,7 +829,7 @@ export default function ProductLibrary() {
           style={{ fontSize: '1.25rem', fontWeight: 400, letterSpacing: '0.04em', color: '#fff', cursor: 'pointer' }}
           onClick={() => router.push('/')}
         >
-          sonance
+          adify
         </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
           {adCount > 0 && (
@@ -632,15 +846,9 @@ export default function ProductLibrary() {
             onClick={() => { sessionStorage.removeItem('sonance_store'); router.push('/') }}
             className="font-sans"
             style={{
-              background: 'none',
-              border: '1px solid rgba(255,255,255,0.08)',
-              borderRadius: '8px',
-              padding: '6px 14px',
-              fontSize: '0.75rem',
-              color: '#555',
-              fontWeight: 300,
-              cursor: 'pointer',
-              transition: 'color 0.2s, border-color 0.2s',
+              background: 'none', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '8px',
+              padding: '6px 14px', fontSize: '0.75rem', color: '#555', fontWeight: 300,
+              cursor: 'pointer', transition: 'color 0.2s, border-color 0.2s',
             }}
             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#999'; (e.currentTarget as HTMLElement).style.borderColor = 'rgba(255,255,255,0.18)' }}
             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#555'; (e.currentTarget as HTMLElement).style.borderColor = 'rgba(255,255,255,0.08)' }}
@@ -696,7 +904,7 @@ export default function ProductLibrary() {
           ))}
         </div>
 
-        {/* Video filter */}
+        {/* Ad filter */}
         <div style={{ display: 'flex', gap: '6px' }}>
           {([
             { key: 'all', label: 'All' },
@@ -710,69 +918,69 @@ export default function ProductLibrary() {
               style={{
                 background: videoFilter === f.key ? 'rgba(255,255,255,0.08)' : 'transparent',
                 border: `1px solid ${videoFilter === f.key ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.05)'}`,
-                borderRadius: '8px',
-                padding: '6px 14px',
-                fontSize: '0.6875rem',
-                fontWeight: 400,
+                borderRadius: '8px', padding: '6px 14px',
+                fontSize: '0.6875rem', fontWeight: 400,
                 color: videoFilter === f.key ? '#ccc' : '#444',
-                cursor: 'pointer',
-                transition: 'all 0.2s',
-                letterSpacing: '0.02em',
+                cursor: 'pointer', transition: 'all 0.2s', letterSpacing: '0.02em',
               }}
             >
               {f.label}
             </button>
           ))}
         </div>
+
         <span className="font-sans" style={{ fontSize: '0.6875rem', color: '#333', fontWeight: 300, marginLeft: 'auto' }}>
           {filtered.length} product{filtered.length !== 1 ? 's' : ''}
         </span>
       </div>
 
-      {/* Grid */}
-      <main style={{ padding: '0 48px 80px', flex: 1 }}>
-        {loading ? (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '80px 0' }}>
-            <span className="font-sans" style={{ fontSize: '0.8125rem', color: '#444', fontWeight: 300 }}>Loading…</span>
-          </div>
-        ) : filtered.length === 0 ? (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '80px 0' }}>
-            <span className="font-sans" style={{ fontSize: '0.8125rem', color: '#333', fontWeight: 300 }}>
-              {search ? 'No products match your search.' : 'No products found.'}
-            </span>
-          </div>
-        ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
-            {filtered.map((product, i) => (
-              <ProductCard
-                key={product.id}
-                product={product}
-                rank={i + 1}
-                hasStorefrontData={hasStorefrontData}
-                storeDomain={storeName}
-                onGenerateAd={setModalProduct}
-                onAdChange={refreshAdCount}
-              />
-            ))}
-          </div>
-        )}
-      </main>
-
-      {/* Ad Generation Modal */}
-      {modalProduct && (
-        <AdModal
-          product={modalProduct}
-          storeDomain={storeName}
-          onClose={() => setModalProduct(null)}
-          onSuccess={() => {
-            refreshAdCount()
-            // cards re-sync via useEffect on storeDomain/product.id
-          }}
-        />
+      {/* Expanded product view */}
+      {expandedProduct ? (
+        <main style={{ padding: '0 48px 80px', flex: 1, animation: isClosing ? 'fadeSlideDown 0.28s ease forwards' : 'fadeSlideUp 0.35s ease forwards' }}>
+          <ExpandedAdView
+            product={expandedProduct}
+            storeDomain={storeName}
+            hasVideo={(() => { const s = String(expandedProduct.id); const id = s.includes('/') ? s.split('/').pop()! : s; return !!hasVideoMap[id] })()}
+            onClose={closeExpanded}
+            onAdChange={refreshAdCount}
+          />
+        </main>
+      ) : (
+        /* Grid */
+        <main style={{ padding: '0 48px 80px', flex: 1, animation: 'fadeIn 0.3s ease forwards' }}>
+          {loading ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '80px 0' }}>
+              <span className="font-sans" style={{ fontSize: '0.8125rem', color: '#444', fontWeight: 300 }}>Loading…</span>
+            </div>
+          ) : filtered.length === 0 ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '80px 0' }}>
+              <span className="font-sans" style={{ fontSize: '0.8125rem', color: '#333', fontWeight: 300 }}>
+                {search ? 'No products match your search.' : 'No products found.'}
+              </span>
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
+              {filtered.map((product, i) => (
+                <ProductCard
+                  key={product.id}
+                  product={product}
+                  rank={i + 1}
+                  hasStorefrontData={hasStorefrontData}
+                  storeDomain={storeName}
+                  onExpand={openExpanded}
+                  onAdChange={refreshAdCount}
+                />
+              ))}
+            </div>
+          )}
+        </main>
       )}
 
       <style>{`
         @keyframes fadeUp { 0% { opacity:0; transform:translateY(28px); } 100% { opacity:1; transform:translateY(0); } }
+        @keyframes fadeSlideUp { 0% { opacity:0; transform:translateY(20px) scale(0.99); } 100% { opacity:1; transform:translateY(0) scale(1); } }
+        @keyframes fadeSlideDown { 0% { opacity:1; transform:translateY(0) scale(1); } 100% { opacity:0; transform:translateY(16px) scale(0.99); } }
+        @keyframes fadeIn { 0% { opacity:0; } 100% { opacity:1; } }
         @keyframes spin { to { transform:rotate(360deg); } }
         @media (max-width:600px) { nav { padding:20px 24px !important; } }
       `}</style>

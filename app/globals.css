@@ -96,8 +96,8 @@
 
 .card-product:hover {
   transform: translateY(-4px);
-  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.1),
-    0 12px 40px rgba(251, 191, 36, 0.07);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 12px 40px rgba(255, 255, 255, 0.06);
 }
 
 .input-dark {

@@ -76,7 +76,7 @@ export default function ConnectStore() {
       {/* Nav */}
       <nav style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '28px 48px' }}>
         <span className="font-serif" style={{ fontSize: '1.25rem', fontWeight: 400, letterSpacing: '0.04em', color: '#fff' }}>
-          sonance
+          adify
         </span>
         <div style={{ display: 'flex', gap: '32px', alignItems: 'center' }}>
           {['How it works', 'Features', 'Pricing'].map((link) => (
