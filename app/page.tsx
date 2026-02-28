@@ -1,27 +1,29 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { normaliseStoreUrl, fetchShopifyProducts } from '../lib/shopify.js'
-import { fetchStorefrontProducts } from '../lib/storefront.js'
+"use client"
 
-const STATUS = { idle: 'idle', loading: 'loading', error: 'error' }
+import { useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { normaliseStoreUrl, fetchShopifyProducts } from '@/lib/shopify'
+import { fetchStorefrontProducts } from '@/lib/storefront'
+
+const STATUS = { idle: 'idle', loading: 'loading', error: 'error' } as const
 
 export default function ConnectStore() {
   const [url, setUrl] = useState('')
   const [token, setToken] = useState('')
   const [showToken, setShowToken] = useState(false)
-  const [status, setStatus] = useState(STATUS.idle)
+  const [status, setStatus] = useState<(typeof STATUS)[keyof typeof STATUS]>(STATUS.idle)
   const [errorMsg, setErrorMsg] = useState('')
-  const navigate = useNavigate()
+  const router = useRouter()
 
-  const handleConnect = async (e) => {
+  const handleConnect = async (e: React.FormEvent) => {
     e.preventDefault()
     setErrorMsg('')
 
-    let baseUrl
+    let baseUrl: string
     try {
       baseUrl = normaliseStoreUrl(url)
-    } catch (err) {
-      setErrorMsg(err.message)
+    } catch (err: unknown) {
+      setErrorMsg((err as Error).message)
       return
     }
 
@@ -32,23 +34,16 @@ export default function ConnectStore() {
       const trimmedToken = token.trim()
 
       if (trimmedToken) {
-        // Storefront API — richer data, real best-seller ranking
         products = await fetchStorefrontProducts(baseUrl, trimmedToken)
       } else {
-        // Public scrape fallback
         products = await fetchShopifyProducts(baseUrl)
       }
 
-      navigate('/products', {
-        state: {
-          storeName: new URL(baseUrl).host,
-          baseUrl,
-          storefrontToken: trimmedToken || null,
-          products,
-        },
-      })
-    } catch (err) {
-      setErrorMsg(err.message)
+      const storeName = new URL(baseUrl).host
+      sessionStorage.setItem('sonance_store', JSON.stringify({ storeName, baseUrl, storefrontToken: trimmedToken || null, products }))
+      router.push(`/products?store=${encodeURIComponent(storeName)}`)
+    } catch (err: unknown) {
+      setErrorMsg((err as Error).message)
       setStatus(STATUS.error)
     }
   }
@@ -68,8 +63,8 @@ export default function ConnectStore() {
               key={link}
               className="font-sans"
               style={{ fontSize: '0.8125rem', color: '#666', cursor: 'pointer', fontWeight: 300, transition: 'color 0.2s' }}
-              onMouseEnter={(e) => (e.target.style.color = '#999')}
-              onMouseLeave={(e) => (e.target.style.color = '#666')}
+              onMouseEnter={(e: React.MouseEvent<HTMLElement>) => (e.currentTarget.style.color = '#999')}
+              onMouseLeave={(e: React.MouseEvent<HTMLElement>) => (e.currentTarget.style.color = '#666')}
             >
               {link}
             </span>
@@ -113,7 +108,6 @@ export default function ConnectStore() {
           onSubmit={handleConnect}
           style={{ display: 'flex', flexDirection: 'column', gap: '10px', width: '100%', maxWidth: '540px', alignItems: 'center' }}
         >
-          {/* URL + button row */}
           <div style={{ display: 'flex', gap: '12px', width: '100%', flexWrap: 'wrap', justifyContent: 'center' }}>
             <input
               className="input-dark"
@@ -134,7 +128,6 @@ export default function ConnectStore() {
             </button>
           </div>
 
-          {/* Optional token row */}
           {showToken ? (
             <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '6px' }}>
               <input
@@ -158,14 +151,13 @@ export default function ConnectStore() {
               onClick={() => setShowToken(true)}
               className="font-sans"
               style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.75rem', color: '#3a3a3a', fontWeight: 300, padding: '2px 0', transition: 'color 0.2s' }}
-              onMouseEnter={(e) => (e.target.style.color = '#666')}
-              onMouseLeave={(e) => (e.target.style.color = '#3a3a3a')}
+              onMouseEnter={(e: React.MouseEvent<HTMLElement>) => (e.currentTarget.style.color = '#666')}
+              onMouseLeave={(e: React.MouseEvent<HTMLElement>) => (e.currentTarget.style.color = '#3a3a3a')}
             >
               + Add Storefront Token for richer data
             </button>
           )}
 
-          {/* Status messages */}
           {loading && (
             <p className="font-sans" style={{ fontSize: '0.75rem', color: '#555', fontWeight: 300, margin: 0, letterSpacing: '0.03em' }}>
               {token.trim() ? 'Loading products via Storefront API…' : 'Connecting to your store…'}

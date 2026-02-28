@@ -4,9 +4,11 @@ export const SORT_KEYS = {
   BEST_SELLING: 'BEST_SELLING',
   NEWEST: 'CREATED_AT',
   PRICE_ASC: 'PRICE',
-  PRICE_DESC: 'PRICE', // same key, reverse flag differs
+  PRICE_DESC: 'PRICE',
   TITLE: 'TITLE',
-}
+} as const
+
+export type SortKeyName = keyof typeof SORT_KEYS
 
 const PRODUCTS_QUERY = `
   query GetProducts($first: Int!, $sortKey: ProductSortKeys!, $reverse: Boolean!) {
@@ -57,12 +59,53 @@ const PRODUCTS_QUERY = `
   }
 `
 
-export async function fetchStorefrontProducts(baseUrl, token, sortKey = 'BEST_SELLING', limit = 48) {
+export interface StorefrontVariant {
+  id: string
+  title: string
+  availableForSale: boolean
+  quantityAvailable: number | null
+  price: { amount: string; currencyCode: string }
+  compareAtPrice: { amount: string; currencyCode: string } | null
+  selectedOptions: { name: string; value: string }[]
+}
+
+export interface StorefrontImage {
+  url: string
+  altText: string | null
+}
+
+export interface StorefrontProduct {
+  id: string
+  title: string
+  description: string
+  category: string
+  vendor: string
+  tags: string[]
+  collections: string[]
+  availableForSale: boolean
+  totalInventory: number
+  price: string | null
+  priceMax: string | null
+  compareAtPrice: string | null
+  onSale: boolean
+  variants: StorefrontVariant[]
+  variantCount: number
+  image: string | null
+  images: StorefrontImage[]
+  bestSellerRank: number
+}
+
+export async function fetchStorefrontProducts(
+  baseUrl: string,
+  token: string,
+  sortKey: string = 'BEST_SELLING',
+  limit: number = 48
+): Promise<StorefrontProduct[]> {
   const endpoint = `${baseUrl}/api/${API_VERSION}/graphql.json`
   const reverse = sortKey === 'PRICE_DESC'
-  const gqlSortKey = SORT_KEYS[sortKey] ?? 'BEST_SELLING'
+  const gqlSortKey = (SORT_KEYS as Record<string, string>)[sortKey] ?? 'BEST_SELLING'
 
-  let res
+  let res: Response
   try {
     res = await fetch(endpoint, {
       method: 'POST',
@@ -76,38 +119,48 @@ export async function fetchStorefrontProducts(baseUrl, token, sortKey = 'BEST_SE
       }),
       signal: AbortSignal.timeout(12_000),
     })
-  } catch (err) {
-    if (err.name === 'TimeoutError') throw new Error('The store took too long to respond.')
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === 'TimeoutError')
+      throw new Error('The store took too long to respond.')
     throw new Error('Could not reach the store. Check the URL and try again.')
   }
 
   if (res.status === 401 || res.status === 403) {
-    throw new Error('Access denied — check your Storefront token and that the app is installed.')
+    throw new Error(
+      'Access denied — check your Storefront token and that the app is installed.'
+    )
   }
   if (!res.ok) throw new Error(`Store returned an error (${res.status}).`)
 
-  const json = await res.json()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const json: any = await res.json()
 
-  // Log raw response to console for debugging
   if (json.errors?.length) {
     console.error('[Storefront API] Errors:', json.errors)
-    const msg = json.errors[0]?.message ?? 'Unknown error'
+    const msg: string = json.errors[0]?.message ?? 'Unknown error'
     throw new Error(`Shopify: ${msg}`)
   }
 
   const edges = json?.data?.products?.edges
-  if (!Array.isArray(edges)) throw new Error("Couldn't read products from the Storefront API.")
+  if (!Array.isArray(edges))
+    throw new Error("Couldn't read products from the Storefront API.")
 
-  return edges.map(({ node: p }, index) => {
-    const variants = p.variants.edges.map((e) => e.node)
-    const images = p.images.edges.map((e) => e.node)
-    const collections = p.collections.edges.map((e) => e.node.title)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return edges.map(({ node: p }: { node: any }, index: number) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const variants: StorefrontVariant[] = p.variants.edges.map((e: any) => e.node)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const images: StorefrontImage[] = p.images.edges.map((e: any) => e.node)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const collections: string[] = p.collections.edges.map((e: any) => e.node.title)
 
     const minPrice = parseFloat(p.priceRange.minVariantPrice.amount)
     const maxPrice = parseFloat(p.priceRange.maxVariantPrice.amount)
-    const currency = p.priceRange.minVariantPrice.currencyCode
+    const currency: string = p.priceRange.minVariantPrice.currencyCode
 
-    const compareAt = parseFloat(p.compareAtPriceRange?.minVariantPrice?.amount ?? 0)
+    const compareAt = parseFloat(
+      p.compareAtPriceRange?.minVariantPrice?.amount ?? 0
+    )
     const onSale = compareAt > 0 && compareAt > minPrice
 
     return {
@@ -120,24 +173,20 @@ export async function fetchStorefrontProducts(baseUrl, token, sortKey = 'BEST_SE
       collections,
       availableForSale: p.availableForSale,
       totalInventory: p.totalInventory,
-      // Pricing
       price: formatPrice(minPrice, currency),
       priceMax: minPrice !== maxPrice ? formatPrice(maxPrice, currency) : null,
       compareAtPrice: onSale ? formatPrice(compareAt, currency) : null,
       onSale,
-      // Variants
       variants,
       variantCount: variants.length,
-      // Images
       image: images[0]?.url ?? null,
       images,
-      // Ranking
       bestSellerRank: index + 1,
     }
   })
 }
 
-function formatPrice(amount, currency) {
+function formatPrice(amount: number, currency: string): string | null {
   if (isNaN(amount)) return null
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
