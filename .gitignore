@@ -1,0 +1,28 @@
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+
+# Build output
+frontend/dist/
+backend/dist/
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Logs
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Temp files written during generation
+/tmp/
