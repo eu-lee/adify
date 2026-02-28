@@ -36,13 +36,16 @@ function systemFont(): string {
   }
 }
 
+/** Resolve the ffmpeg binary — uses FFMPEG_PATH env var if set, otherwise 'ffmpeg'. */
+const FFMPEG_BIN = process.env.FFMPEG_PATH ?? 'ffmpeg';
+
 /** Run ffmpeg with the given args, logging the full command on failure. */
 async function runFFmpeg(args: string[]): Promise<void> {
   try {
-    await execFileAsync('ffmpeg', args, { maxBuffer: 100 * 1024 * 1024 });
+    await execFileAsync(FFMPEG_BIN, args, { maxBuffer: 100 * 1024 * 1024 });
   } catch (err: unknown) {
     const e = err as { stderr?: string; message?: string };
-    console.error('FFmpeg failed.\nCommand:', ['ffmpeg', ...args].join(' '));
+    console.error('FFmpeg failed.\nCommand:', [FFMPEG_BIN, ...args].join(' '));
     console.error('Stderr:', e.stderr ?? e.message);
     throw new Error(`FFmpeg error: ${e.stderr ?? e.message}`);
   }
@@ -127,7 +130,7 @@ export async function composeNarratedAd(
   // Music: widen stereo field with stereotools (M/S mode, boost side channel)
   f.push(
     `[2:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,` +
-    `stereotools=mode=ms:slevel=1.5[music_wide]`
+    `stereotools=slev=1.5[music_wide]`
   );
 
   // Sidechain ducking: music ducks under voice, swells in gaps
@@ -247,7 +250,7 @@ export async function composeMusicAd(
   // Music: more aggressive widening since no voice to protect
   f.push(
     `[1:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,` +
-    `stereotools=mode=ms:slevel=1.8[music_wide]`
+    `stereotools=slev=1.8[music_wide]`
   );
 
   // SFX: full volume, hard L/R pans at each beat-synced cut
@@ -259,10 +262,10 @@ export async function composeMusicAd(
     const delayMs  = Math.max(0, Math.round(cumulativeSecs * 1000) - 100);
     const sfxInput = 2 + i;
     const sfxLabel = `sfx${i}`;
-    // Hard pans: fully left or fully right
+    // Hard pans: fully left or fully right (omit silent channel — pan filter leaves it at 0)
     const pan = i % 2 === 0
-      ? 'pan=stereo|c0=2*c0|c1=0'
-      : 'pan=stereo|c0=0|c1=2*c0';
+      ? 'pan=stereo|c0=2*c0'
+      : 'pan=stereo|c1=2*c0';
 
     f.push(`[${sfxInput}:a]adelay=${delayMs}|${delayMs},${pan}[${sfxLabel}]`);
     sfxLabels.push(`[${sfxLabel}]`);
