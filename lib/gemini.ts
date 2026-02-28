@@ -112,7 +112,14 @@ Write a ${duration}-second narrated video ad. For each sentence of narration, sp
 which clip (clipIndex) and timestamp range from that clip best matches what's being said.
 Prefer using silence regions in the source audio for cuts to avoid cutting over speech.
 
-IMPORTANT: Each sentence's narration must fit its video segment duration.
+IMPORTANT — VARIETY:
+- Use as many DIFFERENT parts of the source video as possible. Spread your cuts across the full timeline of each clip.
+- Do NOT cluster cuts in the same region. If clip 0 is 30 seconds long, pull segments from the beginning, middle, AND end.
+- Each cut MUST use a different timestamp range — never repeat or heavily overlap the same segment.
+- Vary segment lengths (mix short 1-2s cuts with longer 3-5s cuts) to create visual rhythm.
+
+IMPORTANT — DURATION:
+Each sentence's narration must fit its video segment duration.
 Natural speech is approximately 3 words per second. For a segment of N seconds, write approximately N*3 words (plus or minus 2).
 Include "estimatedDurationSec" in your output for each sentence.
 
@@ -160,6 +167,13 @@ ${clipHints}
 
 For each cut, specify which clip (clipIndex) and timestamp range to use.
 
+IMPORTANT — VARIETY:
+- Use as many DIFFERENT parts of the source video as possible. Spread your cuts across the full timeline of each clip.
+- Do NOT cluster cuts in the same region. If a clip is 30 seconds long, pull segments from the beginning, middle, AND end.
+- Each cut MUST use a different timestamp range — never repeat or heavily overlap the same segment.
+- Vary segment lengths (mix short 1-2s cuts with longer 3-5s cuts) to create visual rhythm and energy.
+- Prefer visually interesting moments: product close-ups, action shots, texture details, hands interacting with the product.
+
 Return JSON only, no markdown:
 {
   "adType": "music_only",
@@ -167,6 +181,7 @@ Return JSON only, no markdown:
   "cuts": [
     { "clipIndex": 0, "videoStart": 0.0, "videoEnd": 3.5, "textOverlay": null },
     { "clipIndex": 0, "videoStart": 8.2, "videoEnd": 12.0, "textOverlay": "Product Name" },
+    { "clipIndex": 0, "videoStart": 18.0, "videoEnd": 21.5, "textOverlay": null },
     { "clipIndex": 1, "videoStart": 2.0, "videoEnd": 5.5, "textOverlay": "$29.99" }
   ]
 }`

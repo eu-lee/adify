@@ -351,7 +351,7 @@ function ExpandedAdView({ product, storeDomain, onClose }: {
                 </span>
               )}
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '8px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))', gap: '8px' }}>
               {[
                 { label: 'Mood', value: mood ?? '—' },
                 { label: 'BPM', value: bpm != null ? String(bpm) : '—' },
@@ -362,7 +362,7 @@ function ExpandedAdView({ product, storeDomain, onClose }: {
               ].map(({ label, value }) => (
                 <div key={label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '8px', padding: '10px 12px' }}>
                   <p className="font-sans" style={{ fontSize: '0.5rem', color: '#444', fontWeight: 500, letterSpacing: '0.1em', textTransform: 'uppercase', margin: '0 0 4px' }}>{label}</p>
-                  <p className="font-sans" style={{ fontSize: '0.875rem', color: '#bbb', fontWeight: 400, margin: 0, textTransform: 'capitalize' }}>{value}</p>
+                  <p className="font-sans" style={{ fontSize: '0.875rem', color: '#bbb', fontWeight: 400, margin: 0, textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</p>
                 </div>
               ))}
             </div>

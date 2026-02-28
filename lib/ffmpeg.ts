@@ -41,6 +41,19 @@ function systemFont(): string {
 /** Resolve the ffmpeg binary — uses FFMPEG_PATH env var if set, otherwise 'ffmpeg'. */
 const FFMPEG_BIN = process.env.FFMPEG_PATH ?? 'ffmpeg'
 
+/** Check if the drawtext filter is available (requires libfreetype). */
+let _hasDrawtext: boolean | null = null
+async function hasDrawtext(): Promise<boolean> {
+  if (_hasDrawtext !== null) return _hasDrawtext
+  try {
+    const { stdout } = await execFileAsync(FFMPEG_BIN, ['-filters'])
+    _hasDrawtext = stdout.includes('drawtext')
+  } catch {
+    _hasDrawtext = false
+  }
+  return _hasDrawtext
+}
+
 /** Run ffmpeg with the given args, logging the full command on failure. */
 async function runFFmpeg(args: string[]): Promise<void> {
   try {
@@ -190,6 +203,7 @@ export async function composeMusicAd(
   }
 
   const f: string[] = []
+  const canDrawText = await hasDrawtext()
 
   // ── VIDEO ──────────────────────────────────────────────────────────────────
 
@@ -200,7 +214,7 @@ export async function composeMusicAd(
     let chain =
       `[${clipIndex}:v]trim=start=${videoStart.toFixed(3)}:duration=${dur},setpts=PTS-STARTPTS`
 
-    if (textOverlay) {
+    if (textOverlay && canDrawText) {
       const safe = textOverlay.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:')
       chain +=
         `,drawtext=text='${safe}'` +
