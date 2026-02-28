@@ -705,6 +705,108 @@ Add `storeUrl`, `productHandle`, and `hasVideo` to the `POST /api/analyze-video`
 
 ---
 
+## Audio Editor
+
+After the initial ad is generated, `GenerationView` hands off to `AudioEditor` — an interactive multi-track editor that lets the user refine the ad before downloading.
+
+### Layout
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  [video preview — static, non-editable]                 │
+├─────────────────────────────────────────────────────────┤
+│  TIMELINE ──────────────────── 0s ─────── 30s ───────  │
+│  [Video] │ clip 1 │  clip 2  │ clip 3 │                │
+│  [Voice ✕]│"Ever struggle..."│"Meet MagSnap"│           │  ← click to edit
+│           │[↺]               │[↺]           │           │  ← re-narrate sentence
+│  [Music]  │▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│   │
+│  [SFX]    │  ↯        ↯        ↯                      │  ← toggle each
+├─────────────────────────────────────────────────────────┤
+│  Voice: [Rachel ▼]  [Re-narrate all]                   │
+│  Music: [energetic ▼]  [Regenerate music]              │
+├─────────────────────────────────────────────────────────┤
+│  AI SUGGEST: ["Make it more punchy..."] [Apply →]      │
+├─────────────────────────────────────────────────────────┤
+│  [Apply changes + recompose]    [Download current]     │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Asset storage
+
+All intermediate assets (source video, narration, music) are held **client-side as Blobs** in React state. No server-side session required. On recompose, the client re-POSTs current Blobs to `/api/compose-video` — the same endpoint and FormData shape as the initial generation.
+
+```
+initial generation response
+  → build EditorState (sentences, voiceId, mood, bpm, sfxEnabled[], adType)
+  → store Blobs (sourceVideo, narrationBlob, musicBlob) in React state
+  → render <AudioEditor />
+
+user edits
+  → update EditorState + dirty flags (narrationDirty, musicDirty)
+  → individual regenerate calls update specific Blobs
+
+recompose
+  → POST /api/compose-video with current Blobs + EditorState
+  → replace preview, clear dirty flags
+```
+
+### Track behavior
+
+| Track | Editable | Actions | Backend call |
+|-------|----------|---------|--------------|
+| Video | No | Click to seek preview | None |
+| Voice | Yes | Edit text inline, re-narrate sentence, re-narrate all, remove track | `/api/generate-audio` |
+| Music | Yes | Change mood, regenerate | `/api/generate-music` |
+| SFX | Yes | Toggle per cut point | None (applied at recompose) |
+
+### Voice track toggle (add/remove narration)
+
+**Remove narration**: sets `narrationBlob = null`, `adType = 'music_only'`. No backend call. Voice track collapses to a "+ Add narration" button.
+
+**Add narration** (from music-only): if sentences already exist in state (user toggled off then on), re-narrate immediately. If no sentences exist (was always music-only), call Gemini via `/api/analyze-video` with `adType=narrated` to generate a script first, then narrate.
+
+### AI Suggest (`POST /api/suggest-edit`)
+
+Free-text instruction input. Thin Gemini wrapper that interprets natural language and returns structured diffs:
+
+```
+Request:  { instruction: string, currentScript: string[], currentMood: string }
+Response: { updatedScript?: string[], updatedMood?: string }
+```
+
+Behavior by instruction type:
+
+| Instruction | Response | Frontend action |
+|-------------|----------|-----------------|
+| "More casual script" | `updatedScript` | Update sentences, set `narrationDirty` |
+| "Calmer vibe" | `updatedMood: "luxury"` | Update mood, set `musicDirty` |
+| "Shorter and punchier" | `updatedScript` (fewer sentences) | Update sentences, set `narrationDirty` |
+
+Frontend applies the diff to `EditorState`. User still controls when to recompose — suggest-edit only updates state, never triggers recompose automatically.
+
+### Component structure
+
+```
+AudioEditor/
+├── AudioEditor.tsx       — container, EditorState, dirty flags, recompose handler
+├── Timeline.tsx          — horizontal time axis + track rows
+├── TrackControls.tsx     — voice dropdown, music dropdown, re-narrate all
+└── AISuggest.tsx         — free-text input, POST /api/suggest-edit, apply diff
+```
+
+### New API endpoint
+
+Only one new endpoint is needed. All recompose/regenerate calls reuse existing endpoints:
+
+| Endpoint | Status | Owner |
+|----------|--------|-------|
+| `POST /api/suggest-edit` | **New** | Person 2 |
+| `POST /api/generate-audio` | Existing | Person 2 |
+| `POST /api/generate-music` | Existing | Person 2 |
+| `POST /api/compose-video` | Existing | Person 3 |
+
+---
+
 ## Future Roadmap
 
 ### Spatial Audio (Stereo → Full Spatial)

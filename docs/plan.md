@@ -366,7 +366,101 @@ Sponsors: **Gemini** (video analysis + script + cut list), **ElevenLabs** (TTS n
 
 ---
 
-## Phase 7: Stretch Goals (time permitting)
+## Phase 7: Audio Editor
+
+**Goal**: After generation, replace the simple preview with an interactive multi-track audio editor. User can edit script, swap voice, change music mood, toggle SFX, add/remove narration, and get AI-assisted suggestions — then recompose.
+
+### Asset storage strategy
+
+All intermediate assets are held client-side as Blobs in React state. No server-side session needed. On recompose, re-POST only the changed blobs — same cost as the initial compose call.
+
+```typescript
+interface EditorAssets {
+  sourceVideo: File | Blob;    // from upload or Shopify fetch
+  narrationBlob: Blob | null;  // null = music-only mode
+  musicBlob: Blob;
+}
+
+interface EditorState {
+  sentences: { text: string; videoStart: number; videoEnd: number; durationMs: number }[];
+  cuts: { videoStart: number; videoEnd: number; textOverlay: string | null }[];
+  voiceId: string;
+  mood: string;
+  bpm: number;
+  sfxEnabled: boolean[];       // per cut point
+  adType: 'narrated' | 'music_only';
+  assets: EditorAssets;
+  narrationDirty: boolean;
+  musicDirty: boolean;
+}
+```
+
+### Steps
+
+1. **`components/AudioEditor.tsx`** — main editor container:
+   - Receives initial `EditorState` as props (built from generation pipeline output)
+   - Manages dirty flags: mark `narrationDirty` when sentences/voice change, `musicDirty` when mood changes
+   - Renders `<Timeline />`, `<TrackControls />`, `<AISuggest />`, recompose/download buttons
+
+2. **`components/Timeline.tsx`** — multi-track horizontal timeline:
+   - Time axis scaled to ad duration (15/30/60s)
+   - Four tracks (see layout below): Video, Voice, Music, SFX
+   - Clicking a video clip scrubs the preview player to that timestamp
+
+3. **Track: Video (read-only)**
+   - Blocks for each clip showing `videoStart`–`videoEnd` timestamps
+   - No editing — cuts are fixed post-generation
+   - Clicking a clip seeks the video preview
+
+4. **Track: Voice (editable, toggleable)**
+   - Each sentence is a block, width proportional to `chunkDurations[i]`
+   - Click a block → inline text edit
+   - Per-block "↺" button → re-narrate just that sentence (POST `/api/generate-audio` with one sentence)
+   - Track header has "✕ Remove" to strip narration (sets `narrationBlob = null`, `adType = 'music_only'`)
+   - In music-only mode: track shows "+ Add narration" button → generates script (Gemini) + narration (ElevenLabs)
+
+5. **Track: Music (replaceable)**
+   - Full-width bar colored by current mood
+   - Mood dropdown in track header (energetic, luxury, playful, professional, emotional, minimalist)
+   - Changing mood marks `musicDirty = true`
+   - "Regenerate music" button → POST `/api/generate-music` with new mood → updates `assets.musicBlob`
+
+6. **Track: SFX (per-marker toggle)**
+   - Small markers at each cut point
+   - Click a marker to toggle it on/off (stored in `sfxEnabled[]`)
+   - Applied at recompose time — no backend call for toggling
+
+7. **`components/TrackControls.tsx`** — controls panel below timeline:
+   - Voice: voice dropdown (Rachel, Adam, Bella, etc.) + "Re-narrate all" button
+   - Music: mood dropdown + "Regenerate music" button (mirrored from track header for discoverability)
+
+8. **`components/AISuggest.tsx`** — free-text AI assist:
+   - Text input: "Make it more casual", "Use a calmer vibe", "Shorter, more punchy"
+   - POST `/api/suggest-edit` → Gemini interprets intent → returns `{ updatedScript?, updatedMood? }`
+   - Frontend applies diff to `EditorState` and sets dirty flags
+   - User still controls when to recompose
+
+9. **`POST /api/suggest-edit`** (new — Person 2 owns):
+   ```
+   Request:  { instruction: string, currentScript: string[], currentMood: string }
+   Response: { updatedScript?: string[], updatedMood?: string }
+   ```
+   Thin Gemini wrapper. Only returns fields that changed. Gemini maps natural language to structured diffs.
+
+10. **Recompose flow**:
+    - "Apply changes + recompose" button → POST `/api/compose-video` with current `EditorAssets` + updated `EditorState`
+    - Same endpoint as initial generation, same FormData shape
+    - On response: replace preview video blob, clear dirty flags
+
+11. **Wire into generation page** (`app/generate/[handle]/page.tsx`):
+    - When compose-video responds, instead of showing simple `<GenerationView>` preview, build `EditorState` from pipeline outputs and render `<AudioEditor />`
+    - Initial assets: source video already in browser memory, narration/music blobs from API responses
+
+**Test**: Generate an ad → editor appears → edit a sentence → re-narrate → change mood → AI suggest → recompose → download.
+
+---
+
+## Phase 8: Stretch Goals (time permitting)
 
 Priority order:
 

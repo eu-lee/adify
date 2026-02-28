@@ -114,6 +114,41 @@ You own everything the user sees and the Shopify data layer. You are unblocked f
 
 **Test**: Navigate through the full UI flow (without real generation — mock it).
 
+### Audio Editor (after generation pipeline is wired)
+
+Once the generation pipeline produces a real ad, replace the `<GenerationView>` preview with `<AudioEditor>`. All components live in `components/AudioEditor/`.
+
+**Build in this order:**
+
+1. **`AudioEditor.tsx`** — container:
+   - Accepts `initialState: EditorState` + `initialAssets: EditorAssets` as props
+   - `EditorState` is built from generation pipeline output (sentences, voiceId, mood, bpm, sfxEnabled[], adType)
+   - `EditorAssets` = `{ sourceVideo: File|Blob, narrationBlob: Blob|null, musicBlob: Blob }`
+   - Manages dirty flags (`narrationDirty`, `musicDirty`)
+   - Recompose handler: POST `/api/compose-video` with current assets + state → replace preview blob
+
+2. **`Timeline.tsx`** — four-track horizontal timeline:
+   - Time axis scaled to ad duration
+   - **Video track** (read-only): clip blocks with `videoStart`–`videoEnd`; click → seek preview
+   - **Voice track**: sentence blocks, width from `chunkDurations`; click block → inline text edit; per-block "↺" re-narrate button; "✕ Remove" header button → strips narration, sets `adType = 'music_only'`; in music-only mode shows "+ Add narration" button
+   - **Music track**: full-width bar colored by mood; mood dropdown in header; "Regenerate" → POST `/api/generate-music` → update `musicBlob`
+   - **SFX track**: markers at each cut point; click to toggle `sfxEnabled[i]`
+
+3. **`TrackControls.tsx`** — panel below timeline:
+   - Voice dropdown (Rachel, Adam, Bella, Antoni, Elli, Josh) + "Re-narrate all" → POST `/api/generate-audio` with all sentences + new voiceId
+   - Music mood dropdown + "Regenerate music" (mirrors track header)
+
+4. **`AISuggest.tsx`** — free-text AI assist:
+   - Text input + "Apply suggestion" button
+   - POST `/api/suggest-edit` → apply `updatedScript`/`updatedMood` to state, set dirty flags
+   - User still manually triggers recompose
+
+5. **Wire into generate page**: after compose-video returns, build `EditorState` from pipeline data and render `<AudioEditor />` instead of simple preview
+
+**Add narration flow** (music-only → add voice):
+- If sentences exist in state (toggled off then back on): just re-narrate
+- If no sentences (was always music-only): POST `/api/analyze-video` with `adType=narrated` → get script → POST `/api/generate-audio` → set narrationBlob
+
 ### Hour 3–4 (2:00–4:00): Integration + Polish
 
 13. **Wire up the generation pipeline** in the generate page in this order:
@@ -219,6 +254,24 @@ You own Gemini (video analysis + script + voice selection), ElevenLabs (TTS narr
    - **Fallback**: if Lyria fails, use a bundled track from `/public/music/`
 
 **Test**: Generate narration for a test script. Generate a 30s music track with mood "energetic". Both should produce valid audio files.
+
+### `POST /api/suggest-edit` (new — own this alongside integration work)
+
+Thin Gemini endpoint for the audio editor's AI suggest feature.
+
+```typescript
+// Request
+{ instruction: string, currentScript: string[], currentMood: string }
+
+// Response
+{ updatedScript?: string[], updatedMood?: string }
+```
+
+- Use `gemini-2.0-flash` with a structured JSON prompt
+- Only return fields that changed (both are optional)
+- Prompt should instruct Gemini to: interpret the instruction, rewrite the script if style/length/tone changes are implied, return a new mood string if vibe/energy changes are implied
+- Valid mood values: `"energetic" | "luxury" | "playful" | "professional" | "emotional" | "minimalist"`
+- Keep it stateless — no video upload needed, just text in/text out
 
 ### Hour 3 (2:00–3:00): Integration + Optimization
 
