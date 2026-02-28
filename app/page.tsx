@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { normaliseStoreUrl, fetchShopifyProducts } from '@/lib/shopify'
 import { fetchStorefrontProducts } from '@/lib/storefront'
+import { supabase } from '@/lib/supabase'
 
 const STATUS = { idle: 'idle', loading: 'loading', error: 'error' } as const
 
@@ -41,6 +42,26 @@ export default function ConnectStore() {
 
       const storeName = new URL(baseUrl).host
       sessionStorage.setItem('sonance_store', JSON.stringify({ storeName, baseUrl, storefrontToken: trimmedToken || null, products }))
+
+      const { data: existing } = await supabase
+        .from('products')
+        .select('id')
+        .eq('storefront_id', storeName)
+        .limit(1)
+
+      if (!existing?.length) {
+        await supabase.from('products').insert(
+          products.map((p) => {
+            const raw = String(p.id)
+            return {
+              id: Number(raw.includes('/') ? raw.split('/').pop() : raw),
+              storefront_id: storeName,
+              has_video: false,
+            }
+          })
+        )
+      }
+
       router.push(`/products?store=${encodeURIComponent(storeName)}`)
     } catch (err: unknown) {
       setErrorMsg((err as Error).message)

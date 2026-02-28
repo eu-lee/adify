@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { fetchStorefrontProducts } from '@/lib/storefront'
 import { MOCK_PRODUCTS } from '@/data/products'
 import { hasAd, saveAd, removeAd, getStoreAds } from '@/lib/adStore'
+import { supabase } from '@/lib/supabase'
 
 interface Product {
   id: string | number
@@ -288,6 +289,7 @@ export default function ProductLibrary() {
   }, [])
 
   const storeName = storeData?.storeName ?? 'demo'
+  const displayName = storeName.split('.')[0]
   const baseUrl = storeData?.baseUrl ?? null
   const storefrontToken = storeData?.storefrontToken ?? null
   const hasStorefrontData = !!storefrontToken
@@ -297,6 +299,8 @@ export default function ProductLibrary() {
   const [sortKey, setSortKey] = useState('BEST_SELLING')
   const [loading, setLoading] = useState(false)
   const [adCount, setAdCount] = useState(0)
+  const [hasVideoMap, setHasVideoMap] = useState<Record<string, boolean>>({})
+  const [videoFilter, setVideoFilter] = useState<'all' | 'has_video' | 'no_video'>('all')
 
   useEffect(() => {
     if (storeData?.products) setProducts(storeData.products)
@@ -305,6 +309,20 @@ export default function ProductLibrary() {
 
   useEffect(() => {
     setAdCount(Object.keys(getStoreAds(storeName)).length)
+  }, [storeName])
+
+  useEffect(() => {
+    if (!storeName || storeName === 'demo') return
+    supabase
+      .from('products')
+      .select('id, has_video')
+      .eq('storefront_id', storeName)
+      .then(({ data }) => {
+        if (!data) return
+        const map: Record<string, boolean> = {}
+        data.forEach((row) => { map[row.id] = row.has_video })
+        setHasVideoMap(map)
+      })
   }, [storeName])
 
   const handleAdChange = useCallback(() => {
@@ -331,21 +349,27 @@ export default function ProductLibrary() {
   }
 
   const filtered = useMemo(() => {
-    if (!search.trim()) return products
-    const q = search.toLowerCase()
-    return products.filter(
-      (p) =>
-        p.title.toLowerCase().includes(q) ||
-        (p.category && p.category.toLowerCase().includes(q)) ||
-        (p.vendor && p.vendor.toLowerCase().includes(q)) ||
-        (p.tags && p.tags.some((t) => t.toLowerCase().includes(q)))
-    )
-  }, [products, search])
+    let list = products
+    if (search.trim()) {
+      const q = search.toLowerCase()
+      list = list.filter(
+        (p) =>
+          p.title.toLowerCase().includes(q) ||
+          (p.category && p.category.toLowerCase().includes(q)) ||
+          (p.vendor && p.vendor.toLowerCase().includes(q)) ||
+          (p.tags && p.tags.some((t) => t.toLowerCase().includes(q)))
+      )
+    }
+    const numericId = (p: Product) => { const s = String(p.id); return s.includes('/') ? s.split('/').pop()! : s }
+    if (videoFilter === 'has_video') list = list.filter((p) => hasVideoMap[numericId(p)])
+    if (videoFilter === 'no_video') list = list.filter((p) => !hasVideoMap[numericId(p)])
+    return list
+  }, [products, search, videoFilter, hasVideoMap])
 
   return (
     <div style={{ minHeight: '100vh', background: '#0a0a0a', display: 'flex', flexDirection: 'column' }}>
       {/* Nav */}
-      <nav style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '28px 48px' }}>
+      <nav style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', padding: '28px 48px' }}>
         <span
           className="font-serif"
           style={{ fontSize: '1.25rem', fontWeight: 400, letterSpacing: '0.04em', color: '#fff', cursor: 'pointer' }}
@@ -353,20 +377,51 @@ export default function ProductLibrary() {
         >
           sonance
         </span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
           {adCount > 0 && (
             <span className="font-sans" style={{ fontSize: '0.75rem', color: 'rgba(251,191,36,0.7)', fontWeight: 400 }}>
-              {adCount} ad{adCount !== 1 ? 's' : ''} ready
+              {adCount} ad{adCount !== 1 ? 's' : ''} ready ·
             </span>
           )}
           <span className="font-sans" style={{ fontSize: '0.8125rem', color: '#555', fontWeight: 300 }}>
-            {storeName}
+            {displayName}
           </span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button
+            onClick={() => { sessionStorage.removeItem('sonance_store'); router.push('/') }}
+            className="font-sans"
+            style={{
+              background: 'none',
+              border: '1px solid rgba(255,255,255,0.08)',
+              borderRadius: '8px',
+              padding: '6px 14px',
+              fontSize: '0.75rem',
+              color: '#555',
+              fontWeight: 300,
+              cursor: 'pointer',
+              transition: 'color 0.2s, border-color 0.2s',
+            }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#999'; (e.currentTarget as HTMLElement).style.borderColor = 'rgba(255,255,255,0.18)' }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#555'; (e.currentTarget as HTMLElement).style.borderColor = 'rgba(255,255,255,0.08)' }}
+          >
+            Disconnect
+          </button>
         </div>
       </nav>
 
+      {/* Shop heading */}
+      <div style={{ padding: '40px 48px 0' }}>
+        <h2
+          className="font-serif"
+          style={{ fontSize: 'clamp(2rem, 4vw, 3rem)', fontWeight: 300, letterSpacing: '-0.02em', color: '#fff', margin: 0, lineHeight: 1.1 }}
+        >
+          {displayName}
+        </h2>
+      </div>
+
       {/* Toolbar */}
-      <div style={{ padding: '0 48px', display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap', marginBottom: '32px' }}>
+      <div style={{ padding: '32px 48px 0', display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap', marginBottom: '40px' }}>
         {/* Search */}
         <div style={{ position: 'relative', flex: 1, minWidth: '200px', maxWidth: '360px' }}>
           <span style={{ position: 'absolute', left: '14px', top: '50%', transform: 'translateY(-50%)', color: '#444', pointerEvents: 'none' }}>
@@ -407,6 +462,35 @@ export default function ProductLibrary() {
           ))}
         </div>
 
+        {/* Video filter */}
+        <div style={{ display: 'flex', gap: '6px' }}>
+          {([
+            { key: 'all', label: 'All' },
+            { key: 'has_video', label: 'Has Ad(s)' },
+            { key: 'no_video', label: 'No Ads' },
+          ] as const).map((f) => (
+            <button
+              key={f.key}
+              onClick={() => setVideoFilter(f.key)}
+              className="font-sans"
+              style={{
+                background: videoFilter === f.key ? 'rgba(255,255,255,0.08)' : 'transparent',
+                border: `1px solid ${videoFilter === f.key ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.05)'}`,
+                borderRadius: '8px',
+                padding: '6px 14px',
+                fontSize: '0.6875rem',
+                fontWeight: 400,
+                color: videoFilter === f.key ? '#ccc' : '#444',
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+                letterSpacing: '0.02em',
+              }}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+
         {/* Product count */}
         <span className="font-sans" style={{ fontSize: '0.6875rem', color: '#333', fontWeight: 300, marginLeft: 'auto' }}>
           {filtered.length} product{filtered.length !== 1 ? 's' : ''}
@@ -426,7 +510,7 @@ export default function ProductLibrary() {
             </span>
           </div>
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '1px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
             {filtered.map((product, i) => (
               <ProductCard
                 key={product.id}
