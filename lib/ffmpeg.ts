@@ -110,8 +110,8 @@ export async function composeNarratedAd(
 
   f.push(`${range(n).map(i => `[seg${i}]`).join('')}concat=n=${n}:v=1:a=0[vc]`)
   f.push(
-    `[vc]scale=1080:1920:force_original_aspect_ratio=decrease,` +
-    `pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black[v]`
+    `[vc]scale=1920:1080:force_original_aspect_ratio=decrease,` +
+    `pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black[v]`
   )
 
   // ── AUDIO ──────────────────────────────────────────────────────────────────
@@ -215,8 +215,8 @@ export async function composeMusicAd(
 
   f.push(`${range(n).map(i => `[seg${i}]`).join('')}concat=n=${n}:v=1:a=0[vc]`)
   f.push(
-    `[vc]scale=1080:1920:force_original_aspect_ratio=decrease,` +
-    `pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black[v]`
+    `[vc]scale=1920:1080:force_original_aspect_ratio=decrease,` +
+    `pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black[v]`
   )
 
   // ── AUDIO ──────────────────────────────────────────────────────────────────

@@ -4,7 +4,7 @@ import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { fetchStorefrontProducts } from '@/lib/storefront'
 import { MOCK_PRODUCTS } from '@/data/products'
-import { hasAd, saveAd, removeAd, getStoreAds } from '@/lib/adStore'
+import { saveAd, getStoreAds } from '@/lib/adStore'
 import { supabase } from '@/lib/supabase'
 
 function base64ToBlob(b64: string, mime: string): Blob {
@@ -120,12 +120,10 @@ function InventoryBar({ total }: { total: number | null | undefined }) {
 
 // ─── Expanded Ad View ─────────────────────────────────────────────────────────
 
-function ExpandedAdView({ product, storeDomain, hasVideo = false, onClose, onAdChange }: {
+function ExpandedAdView({ product, storeDomain, onClose }: {
   product: Product
   storeDomain: string
-  hasVideo?: boolean
   onClose: () => void
-  onAdChange?: () => void
 }) {
   const [adType, setAdType] = useState<'narrated' | 'music_only'>('narrated')
   const [duration, setDuration] = useState<15 | 30 | 60>(30)
@@ -285,7 +283,6 @@ function ExpandedAdView({ product, storeDomain, hasVideo = false, onClose, onAdC
       const url = URL.createObjectURL(outputBlob)
       setAdVideoUrl(url)
       saveAd(storeDomain, product.id, { productTitle: product.title, adType, duration, ...analyzeData })
-      onAdChange?.()
       setFormStatus('done')
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err))
@@ -481,22 +478,33 @@ function ExpandedAdView({ product, storeDomain, hasVideo = false, onClose, onAdC
                   <>
                     {adVideoUrl && (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                        <video
-                          controls
-                          src={adVideoUrl}
-                          style={{ width: '100%', borderRadius: '8px', background: '#000' }}
-                        />
-                        <div style={{ display: 'flex', gap: '12px' }}>
+                        <div style={{ width: '100%', aspectRatio: '16/9', background: '#000', borderRadius: '8px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <video
+                            controls
+                            src={adVideoUrl}
+                            style={{ height: '100%', width: 'auto', borderRadius: '8px', background: '#000' }}
+                          />
+                        </div>
+                        <div style={{ display: 'flex', gap: '12px', alignItems: 'stretch' }}>
+                          <a
+                            href={`/ad-preview?url=${encodeURIComponent(adVideoUrl)}&title=${encodeURIComponent(product.title)}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="btn-primary"
+                            style={{ flex: 1 }}
+                          >
+                            View Ad
+                          </a>
                           <a
                             href={adVideoUrl}
                             download="ad.mp4"
                             className="btn-primary"
-                            style={{ flex: 1, textAlign: 'center', textDecoration: 'none' }}
+                            style={{ flex: 1 }}
                           >
                             Download
                           </a>
                           <button
-                            className="btn-secondary"
+                            className="btn-primary"
                             onClick={() => setFormStatus('idle')}
                             style={{ flex: 1 }}
                           >
@@ -681,27 +689,14 @@ function ExpandedAdView({ product, storeDomain, hasVideo = false, onClose, onAdC
 
 // ─── Product Card ─────────────────────────────────────────────────────────────
 
-function ProductCard({ product, rank, hasStorefrontData, storeDomain, onExpand, onAdChange }: {
+function ProductCard({ product, rank, hasStorefrontData, storeDomain, onExpand }: {
   product: Product
   rank: number
   hasStorefrontData: boolean
   storeDomain: string
   onExpand: (product: Product) => void
-  onAdChange?: () => void
 }) {
   const [hovered, setHovered] = useState(false)
-  const [adExists, setAdExists] = useState(() => hasAd(storeDomain, product.id))
-
-  useEffect(() => {
-    setAdExists(hasAd(storeDomain, product.id))
-  }, [storeDomain, product.id])
-
-  function handleRemoveAd(e: React.MouseEvent) {
-    e.stopPropagation()
-    removeAd(storeDomain, product.id)
-    setAdExists(false)
-    onAdChange?.()
-  }
 
   function handleCardClick(e: React.MouseEvent) {
     // Don't expand if clicking the Remove button (handled by stopPropagation there)
@@ -792,37 +787,19 @@ function ProductCard({ product, rank, hasStorefrontData, storeDomain, onExpand, 
 
         <div style={{ flex: 1, minHeight: '10px' }} />
 
-        {adExists ? (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'rgba(251,191,36,0.8)', boxShadow: '0 0 6px rgba(251,191,36,0.5)', flexShrink: 0 }} />
-              <span className="font-sans" style={{ fontSize: '0.8125rem', color: 'rgba(251,191,36,0.75)', fontWeight: 400 }}>Ad ready</span>
-            </div>
-            <button
-              onClick={handleRemoveAd}
-              className="font-sans"
-              style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.6875rem', color: '#333', fontWeight: 300, padding: 0, transition: 'color 0.2s' }}
-              onMouseEnter={e => ((e.target as HTMLElement).style.color = '#666')}
-              onMouseLeave={e => ((e.target as HTMLElement).style.color = '#333')}
-            >
-              Remove
-            </button>
-          </div>
-        ) : (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: hovered && !isSoldOut ? '#fff' : '#444', transition: 'color 0.25s', fontFamily: "'DM Sans', sans-serif", fontSize: '0.8125rem', fontWeight: 400, letterSpacing: '0.01em' }}>
-            <span style={{
-              width: '20px', height: '20px', borderRadius: '50%',
-              border: `1px solid ${hovered && !isSoldOut ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.1)'}`,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              flexShrink: 0, transition: 'border-color 0.25s',
-            }}>
-              <svg width="7" height="7" viewBox="0 0 8 8" fill={hovered && !isSoldOut ? '#fff' : '#555'} style={{ transition: 'fill 0.25s', marginLeft: '1px' }}>
-                <polygon points="0,0 8,4 0,8" />
-              </svg>
-            </span>
-            Generate Ad
-          </div>
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: hovered && !isSoldOut ? '#fff' : '#444', transition: 'color 0.25s', fontFamily: "'DM Sans', sans-serif", fontSize: '0.8125rem', fontWeight: 400, letterSpacing: '0.01em' }}>
+          <span style={{
+            width: '20px', height: '20px', borderRadius: '50%',
+            border: `1px solid ${hovered && !isSoldOut ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.1)'}`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            flexShrink: 0, transition: 'border-color 0.25s',
+          }}>
+            <svg width="7" height="7" viewBox="0 0 8 8" fill={hovered && !isSoldOut ? '#fff' : '#555'} style={{ transition: 'fill 0.25s', marginLeft: '1px' }}>
+              <polygon points="0,0 8,4 0,8" />
+            </svg>
+          </span>
+          Generate Ad
+        </div>
       </div>
     </div>
   )
@@ -852,9 +829,6 @@ export default function ProductLibrary() {
   const [search, setSearch] = useState('')
   const [sortKey, setSortKey] = useState('BEST_SELLING')
   const [loading, setLoading] = useState(false)
-  const [adCount, setAdCount] = useState(0)
-  const [hasVideoMap, setHasVideoMap] = useState<Record<string, boolean>>({})
-  const [videoFilter, setVideoFilter] = useState<'all' | 'has_video' | 'no_video'>('all')
   const [expandedProduct, setExpandedProduct] = useState<Product | null>(null)
   const [isClosing, setIsClosing] = useState(false)
 
@@ -875,28 +849,6 @@ export default function ProductLibrary() {
     if (storeData?.products) setProducts(storeData.products)
     else setProducts(MOCK_PRODUCTS)
   }, [storeData])
-
-  useEffect(() => {
-    setAdCount(Object.keys(getStoreAds(storeName)).length)
-  }, [storeName])
-
-  useEffect(() => {
-    if (!storeName || storeName === 'demo') return
-    supabase
-      .from('products')
-      .select('id, has_video')
-      .eq('storefront_id', storeName)
-      .then(({ data }) => {
-        if (!data) return
-        const map: Record<string, boolean> = {}
-        data.forEach((row) => { map[row.id] = row.has_video })
-        setHasVideoMap(map)
-      })
-  }, [storeName])
-
-  const refreshAdCount = useCallback(() => {
-    setAdCount(Object.keys(getStoreAds(storeName)).length)
-  }, [storeName])
 
   const handleSort = async (key: string) => {
     setSortKey(key)
@@ -928,11 +880,8 @@ export default function ProductLibrary() {
           (p.tags && p.tags.some((t) => t.toLowerCase().includes(q)))
       )
     }
-    const numericId = (p: Product) => { const s = String(p.id); return s.includes('/') ? s.split('/').pop()! : s }
-    if (videoFilter === 'has_video') list = list.filter((p) => hasVideoMap[numericId(p)])
-    if (videoFilter === 'no_video') list = list.filter((p) => !hasVideoMap[numericId(p)])
     return list
-  }, [products, search, videoFilter, hasVideoMap])
+  }, [products, search])
 
   return (
     <div style={{ minHeight: '100vh', background: '#0a0a0a', display: 'flex', flexDirection: 'column' }}>
@@ -946,11 +895,6 @@ export default function ProductLibrary() {
           adify
         </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
-          {adCount > 0 && (
-            <span className="font-sans" style={{ fontSize: '0.75rem', color: 'rgba(251,191,36,0.7)', fontWeight: 400 }}>
-              {adCount} ad{adCount !== 1 ? 's' : ''} ready ·
-            </span>
-          )}
           <span className="font-sans" style={{ fontSize: '0.8125rem', color: '#555', fontWeight: 300 }}>
             {displayName}
           </span>
@@ -1018,31 +962,6 @@ export default function ProductLibrary() {
           ))}
         </div>
 
-        {/* Ad filter */}
-        <div style={{ display: 'flex', gap: '6px' }}>
-          {([
-            { key: 'all', label: 'All' },
-            { key: 'has_video', label: 'Has Ad(s)' },
-            { key: 'no_video', label: 'No Ads' },
-          ] as const).map((f) => (
-            <button
-              key={f.key}
-              onClick={() => setVideoFilter(f.key)}
-              className="font-sans"
-              style={{
-                background: videoFilter === f.key ? 'rgba(255,255,255,0.08)' : 'transparent',
-                border: `1px solid ${videoFilter === f.key ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.05)'}`,
-                borderRadius: '8px', padding: '6px 14px',
-                fontSize: '0.6875rem', fontWeight: 400,
-                color: videoFilter === f.key ? '#ccc' : '#444',
-                cursor: 'pointer', transition: 'all 0.2s', letterSpacing: '0.02em',
-              }}
-            >
-              {f.label}
-            </button>
-          ))}
-        </div>
-
         <span className="font-sans" style={{ fontSize: '0.6875rem', color: '#333', fontWeight: 300, marginLeft: 'auto' }}>
           {filtered.length} product{filtered.length !== 1 ? 's' : ''}
         </span>
@@ -1054,9 +973,7 @@ export default function ProductLibrary() {
           <ExpandedAdView
             product={expandedProduct}
             storeDomain={storeName}
-            hasVideo={(() => { const s = String(expandedProduct.id); const id = s.includes('/') ? s.split('/').pop()! : s; return !!hasVideoMap[id] })()}
             onClose={closeExpanded}
-            onAdChange={refreshAdCount}
           />
         </main>
       ) : (
@@ -1082,7 +999,6 @@ export default function ProductLibrary() {
                   hasStorefrontData={hasStorefrontData}
                   storeDomain={storeName}
                   onExpand={openExpanded}
-                  onAdChange={refreshAdCount}
                 />
               ))}
             </div>
