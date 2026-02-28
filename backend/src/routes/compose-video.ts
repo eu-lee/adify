@@ -2,11 +2,12 @@ import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { composeNarratedAd, composeMusicAd, Cut, Sentence } from '../lib/ffmpeg';
 import { snapCutsToBeatMap } from '../lib/beats';
 
 const router = Router();
-const upload = multer({ dest: '/tmp/adify-uploads/' });
+const upload = multer({ dest: path.join(os.tmpdir(), 'adify-uploads') });
 
 const SFX_DIR = path.join(process.cwd(), '..', 'public', 'sfx');
 
@@ -18,7 +19,7 @@ router.post(
     { name: 'music', maxCount: 1 },
   ]),
   async (req: Request, res: Response): Promise<void> => {
-    const tmpDir = path.join('/tmp', `adify-${Date.now()}`);
+    const tmpDir = path.join(os.tmpdir(), `adify-${Date.now()}`);
     fs.mkdirSync(tmpDir, { recursive: true });
 
     try {
