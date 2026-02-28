@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import * as fs from 'fs'
 import * as path from 'path'
-import * as os from 'os'
 import { composeNarratedAd, composeMusicAd } from '@/lib/ffmpeg'
 import { snapCutsToBeatMap, Cut } from '@/lib/beats'
 
@@ -12,7 +11,7 @@ const SFX_DIR = path.join(process.cwd(), 'public', 'sfx')
 
 export async function POST(req: NextRequest) {
   const timestamp = Date.now()
-  const tmpDir = path.join(os.tmpdir(), `adify-${timestamp}`)
+  const tmpDir = path.join(process.cwd(), '.tmp', `adify-${timestamp}`)
   fs.mkdirSync(tmpDir, { recursive: true })
 
   try {
@@ -20,11 +19,22 @@ export async function POST(req: NextRequest) {
 
     // ── Parse files ──────────────────────────────────────────────────────────
 
-    const videoFile  = formData.get('video')   as File | null
+    // Accept video_0, video_1, ... or single "video" for backward compat
+    const videoFiles: File[] = []
+    for (let i = 0; ; i++) {
+      const f = formData.get(`video_${i}`) as File | null
+      if (!f) break
+      videoFiles.push(f)
+    }
+    if (videoFiles.length === 0) {
+      const single = formData.get('video') as File | null
+      if (single) videoFiles.push(single)
+    }
+
     const musicFile  = formData.get('music')   as File | null
     const narration  = formData.get('narration') as File | null
 
-    if (!videoFile) return NextResponse.json({ error: 'Missing video file' }, { status: 400 })
+    if (videoFiles.length === 0) return NextResponse.json({ error: 'Missing video file(s)' }, { status: 400 })
     if (!musicFile) return NextResponse.json({ error: 'Missing music file' }, { status: 400 })
 
     // ── Parse fields ─────────────────────────────────────────────────────────
@@ -34,15 +44,25 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'adType must be "narrated" or "music_only"' }, { status: 400 })
     }
 
-    const audioAnalysis = JSON.parse((formData.get('audioAnalysis') as string | null) ?? '{"hasSpeech":false}') as { hasSpeech: boolean }
+    const rawAudioAnalysis = JSON.parse((formData.get('audioAnalysis') as string | null) ?? '{"hasSpeech":false}')
+    // Normalize: accept both single object and array, convert to single object for ffmpeg
+    const audioAnalysis: { hasSpeech: boolean } = Array.isArray(rawAudioAnalysis)
+      ? { hasSpeech: rawAudioAnalysis.some((a: { hasSpeech: boolean }) => a.hasSpeech) }
+      : rawAudioAnalysis
 
     // ── Write files to tmp ───────────────────────────────────────────────────
 
-    const videoPath = path.join(tmpDir, 'source.mp4')
-    fs.writeFileSync(videoPath, Buffer.from(await videoFile.arrayBuffer()))
+    const videoPaths: string[] = []
+    for (let i = 0; i < videoFiles.length; i++) {
+      const vPath = path.join(tmpDir, `source_${i}.mp4`)
+      fs.writeFileSync(vPath, Buffer.from(await videoFiles[i].arrayBuffer()))
+      videoPaths.push(vPath)
+    }
 
-    const musicPath = path.join(tmpDir, 'music.wav')
-    fs.writeFileSync(musicPath, Buffer.from(await musicFile.arrayBuffer()))
+    const musicBytes = Buffer.from(await musicFile.arrayBuffer())
+    const isMP3 = musicBytes[0] === 0xFF || musicBytes.slice(0, 3).toString('ascii') === 'ID3'
+    const musicPath = path.join(tmpDir, isMP3 ? 'music.mp3' : 'music.wav')
+    fs.writeFileSync(musicPath, musicBytes)
 
     const outputPath = path.join(tmpDir, 'output.mp4')
 
@@ -67,7 +87,7 @@ export async function POST(req: NextRequest) {
       }
 
       await composeNarratedAd(
-        videoPath, narrationPath, musicPath, SFX_DIR,
+        videoPaths, narrationPath, musicPath, SFX_DIR,
         sentences, chunkDurations, audioAnalysis, outputPath
       )
     } else {
@@ -82,7 +102,7 @@ export async function POST(req: NextRequest) {
       const totalDuration = rawCuts.reduce((sum, c) => sum + (c.videoEnd - c.videoStart), 0)
       const cuts = snapCutsToBeatMap(rawCuts, bpm, totalDuration)
 
-      await composeMusicAd(videoPath, musicPath, SFX_DIR, cuts, audioAnalysis, outputPath)
+      await composeMusicAd(videoPaths, musicPath, SFX_DIR, cuts, audioAnalysis, outputPath)
     }
 
     // ── Return MP4 ───────────────────────────────────────────────────────────

@@ -23,12 +23,12 @@ export interface AudioAnalysis {
 export interface NarratedAnalysis {
   mood: string
   voice: { elevenlabs_voice_id: string }
-  sentences: { text: string; videoStart: number; videoEnd: number }[]
+  sentences: { text: string; clipIndex: number; videoStart: number; videoEnd: number; estimatedDurationSec: number }[]
 }
 
 export interface MusicAnalysis {
   mood: string
-  cuts: { videoStart: number; videoEnd: number; textOverlay: string | null }[]
+  cuts: { clipIndex: number; videoStart: number; videoEnd: number; textOverlay: string | null }[]
 }
 
 export const MOOD_BPM: Record<string, number> = {
@@ -87,28 +87,34 @@ async function uploadAndWaitForActive(filePath: string): Promise<string> {
 
 function buildNarratedPrompt(
   product: Product,
-  audioAnalysis: AudioAnalysis,
+  audioAnalyses: AudioAnalysis[],
   duration: number,
 ): string {
-  const silenceHint =
-    audioAnalysis.silenceRegions.length > 0
-      ? `Audio hint: Silence regions in source video (prefer cuts here): ${audioAnalysis.silenceRegions
-          .map(r => `${r.start.toFixed(1)}s-${r.end.toFixed(1)}s`)
-          .join(', ')}. Speech present: ${audioAnalysis.hasSpeech}.`
-      : `Audio hint: No detected silence regions. Speech present: ${audioAnalysis.hasSpeech}.`
+  const clipHints = audioAnalyses.map((aa, i) => {
+    const silenceHint =
+      aa.silenceRegions.length > 0
+        ? `Silence regions: ${aa.silenceRegions.map(r => `${r.start.toFixed(1)}s-${r.end.toFixed(1)}s`).join(', ')}`
+        : `No detected silence regions`
+    return `Clip ${i}: ${silenceHint}. Speech present: ${aa.hasSpeech}.`
+  }).join('\n')
 
-  return `Watch this product video. You are an expert TikTok/Instagram ad copywriter.
+  return `Watch these product video clips. You are an expert TikTok/Instagram ad copywriter.
 
 Product: ${product.title}
 Description: ${product.description}
 Price: ${product.price}
 Target duration: ${duration} seconds
 
-${silenceHint}
+You are given ${audioAnalyses.length} source video clip(s) (Clip 0${audioAnalyses.length > 1 ? `, Clip 1, ...Clip ${audioAnalyses.length - 1}` : ''}):
+${clipHints}
 
 Write a ${duration}-second narrated video ad. For each sentence of narration, specify
-which timestamp range from the source video best matches what's being said.
+which clip (clipIndex) and timestamp range from that clip best matches what's being said.
 Prefer using silence regions in the source audio for cuts to avoid cutting over speech.
+
+IMPORTANT: Each sentence's narration must fit its video segment duration.
+Natural speech is approximately 3 words per second. For a segment of N seconds, write approximately N*3 words (plus or minus 2).
+Include "estimatedDurationSec" in your output for each sentence.
 
 Also determine the ideal voice characteristics for this product's target audience.
 Choose the elevenlabs_voice_id from ONLY these options:
@@ -127,15 +133,21 @@ Return JSON only, no markdown:
   "sentences": [
     {
       "text": "Example narration sentence.",
+      "clipIndex": 0,
       "videoStart": 0.0,
-      "videoEnd": 4.2
+      "videoEnd": 4.2,
+      "estimatedDurationSec": 4.2
     }
   ]
 }`
 }
 
-function buildMusicPrompt(product: Product, duration: number): string {
-  return `Watch this product video. Create a ${duration}-second music-only video ad
+function buildMusicPrompt(product: Product, audioAnalyses: AudioAnalysis[], duration: number): string {
+  const clipHints = audioAnalyses.map((aa, i) => {
+    return `Clip ${i}: Speech present: ${aa.hasSpeech}.`
+  }).join('\n')
+
+  return `Watch these product video clips. Create a ${duration}-second music-only video ad
 (no voiceover). Determine the best cuts based on visual content.
 
 Product: ${product.title}
@@ -143,25 +155,30 @@ Description: ${product.description}
 Price: ${product.price}
 Target duration: ${duration} seconds
 
+You are given ${audioAnalyses.length} source video clip(s) (Clip 0${audioAnalyses.length > 1 ? `, Clip 1, ...Clip ${audioAnalyses.length - 1}` : ''}):
+${clipHints}
+
+For each cut, specify which clip (clipIndex) and timestamp range to use.
+
 Return JSON only, no markdown:
 {
   "adType": "music_only",
   "mood": "energetic|luxury|playful|professional|emotional|minimalist",
   "cuts": [
-    { "videoStart": 0.0, "videoEnd": 3.5, "textOverlay": null },
-    { "videoStart": 8.2, "videoEnd": 12.0, "textOverlay": "Product Name" },
-    { "videoStart": 15.0, "videoEnd": 19.5, "textOverlay": "$29.99" }
+    { "clipIndex": 0, "videoStart": 0.0, "videoEnd": 3.5, "textOverlay": null },
+    { "clipIndex": 0, "videoStart": 8.2, "videoEnd": 12.0, "textOverlay": "Product Name" },
+    { "clipIndex": 1, "videoStart": 2.0, "videoEnd": 5.5, "textOverlay": "$29.99" }
   ]
 }`
 }
 
 export async function analyzeVideoForNarratedAd(
-  videoPath: string,
+  videoPaths: string[],
   product: Product,
-  audioAnalysis: AudioAnalysis,
+  audioAnalyses: AudioAnalysis[],
   duration: number,
 ): Promise<NarratedAnalysis> {
-  const fileUri = await uploadAndWaitForActive(videoPath)
+  const fileUris = await Promise.all(videoPaths.map(p => uploadAndWaitForActive(p)))
 
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY_1!)
   const model = genAI.getGenerativeModel({
@@ -169,10 +186,10 @@ export async function analyzeVideoForNarratedAd(
     generationConfig: { responseMimeType: 'application/json' },
   })
 
-  const prompt = buildNarratedPrompt(product, audioAnalysis, duration)
+  const prompt = buildNarratedPrompt(product, audioAnalyses, duration)
 
   const result = await model.generateContent([
-    { fileData: { mimeType: 'video/mp4', fileUri } },
+    ...fileUris.map(fileUri => ({ fileData: { mimeType: 'video/mp4' as const, fileUri } })),
     { text: prompt },
   ])
 
@@ -187,12 +204,12 @@ export async function analyzeVideoForNarratedAd(
 }
 
 export async function analyzeVideoForMusicAd(
-  videoPath: string,
+  videoPaths: string[],
   product: Product,
-  audioAnalysis: AudioAnalysis,
+  audioAnalyses: AudioAnalysis[],
   duration: number,
 ): Promise<MusicAnalysis> {
-  const fileUri = await uploadAndWaitForActive(videoPath)
+  const fileUris = await Promise.all(videoPaths.map(p => uploadAndWaitForActive(p)))
 
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY_1!)
   const model = genAI.getGenerativeModel({
@@ -200,10 +217,10 @@ export async function analyzeVideoForMusicAd(
     generationConfig: { responseMimeType: 'application/json' },
   })
 
-  const prompt = buildMusicPrompt(product, duration)
+  const prompt = buildMusicPrompt(product, audioAnalyses, duration)
 
   const result = await model.generateContent([
-    { fileData: { mimeType: 'video/mp4', fileUri } },
+    ...fileUris.map(fileUri => ({ fileData: { mimeType: 'video/mp4' as const, fileUri } })),
     { text: prompt },
   ])
 

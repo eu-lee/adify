@@ -8,11 +8,13 @@ const execFileAsync = promisify(execFile)
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface Sentence {
+  clipIndex: number
   videoStart: number
   videoEnd: number
 }
 
 export interface Cut {
+  clipIndex: number
   videoStart: number
   videoEnd: number
   textOverlay?: string | null
@@ -59,7 +61,7 @@ async function runFFmpeg(args: string[]): Promise<void> {
  * + spatial SFX into the final 1080x1920 MP4.
  */
 export async function composeNarratedAd(
-  videoPath: string,
+  videoPaths: string[],
   narrationPath: string,
   musicPath: string,
   sfxDir: string,
@@ -73,11 +75,14 @@ export async function composeNarratedAd(
 
   const cutCount = n - 1
 
-  const inputs: string[] = [
-    '-i', videoPath,
-    '-i', narrationPath,
-    '-i', musicPath,
-  ]
+  const inputs: string[] = []
+  for (const vp of videoPaths) {
+    inputs.push('-i', vp)
+  }
+  const narrationIdx = videoPaths.length
+  const musicIdx = videoPaths.length + 1
+  inputs.push('-i', narrationPath)
+  inputs.push('-i', musicPath)
   for (let i = 0; i < cutCount; i++) {
     inputs.push('-i', path.join(sfxDir, `whoosh-${(i % 3) + 1}.mp3`))
   }
@@ -86,10 +91,8 @@ export async function composeNarratedAd(
 
   // ── VIDEO ──────────────────────────────────────────────────────────────────
 
-  f.push(`[0:v]split=${n}${range(n).map(i => `[v${i}]`).join('')}`)
-
   for (let i = 0; i < n; i++) {
-    const { videoStart, videoEnd } = sentences[i]
+    const { clipIndex, videoStart, videoEnd } = sentences[i]
     const targetDur = chunkDurations[i] / 1000
     const clipDur   = videoEnd - videoStart
     const trimDur   = Math.min(clipDur, targetDur)
@@ -100,7 +103,7 @@ export async function composeNarratedAd(
       : ''
 
     f.push(
-      `[v${i}]trim=start=${videoStart.toFixed(3)}:duration=${trimDur.toFixed(3)},` +
+      `[${clipIndex}:v]trim=start=${videoStart.toFixed(3)}:duration=${trimDur.toFixed(3)},` +
       `setpts=PTS-STARTPTS${padFilter}[seg${i}]`
     )
   }
@@ -113,13 +116,13 @@ export async function composeNarratedAd(
 
   // ── AUDIO ──────────────────────────────────────────────────────────────────
 
-  f.push(`[1:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[voice]`)
+  f.push(`[${narrationIdx}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,asplit=2[voice][voice_sc]`)
   f.push(
-    `[2:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,` +
+    `[${musicIdx}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,` +
     `stereotools=slev=1.5[music_wide]`
   )
   f.push(
-    `[music_wide][voice]sidechaincompress=` +
+    `[music_wide][voice_sc]sidechaincompress=` +
     `threshold=0.02:ratio=6:attack=200:release=1000[ducked]`
   )
 
@@ -129,7 +132,7 @@ export async function composeNarratedAd(
   for (let i = 0; i < cutCount; i++) {
     cumulativeMs += chunkDurations[i]
     const delayMs  = Math.max(0, cumulativeMs - 100)
-    const sfxInput = 3 + i
+    const sfxInput = videoPaths.length + 2 + i
     const sfxLabel = `sfx${i}`
     const pan = i % 2 === 0
       ? 'pan=stereo|c0=1.5*c0|c1=0.3*c0'
@@ -139,13 +142,7 @@ export async function composeNarratedAd(
     sfxLabels.push(`[${sfxLabel}]`)
   }
 
-  const ambientLabels: string[] = []
-  if (!audioAnalysis.hasSpeech) {
-    f.push(`[0:a]volume=0.1[ambient]`)
-    ambientLabels.push('[ambient]')
-  }
-
-  const mixStreams = ['[voice]', '[ducked]', ...sfxLabels, ...ambientLabels]
+  const mixStreams = ['[voice]', '[ducked]', ...sfxLabels]
   f.push(
     `${mixStreams.join('')}amix=inputs=${mixStreams.length}:duration=first:normalize=0[a]`
   )
@@ -169,7 +166,7 @@ export async function composeNarratedAd(
  * Burns in text overlays where specified, full-width spatial music, hard-panned SFX.
  */
 export async function composeMusicAd(
-  videoPath: string,
+  videoPaths: string[],
   musicPath: string,
   sfxDir: string,
   cuts: Cut[],
@@ -182,7 +179,12 @@ export async function composeMusicAd(
   const cutCount = n - 1
   const font = systemFont()
 
-  const inputs: string[] = ['-i', videoPath, '-i', musicPath]
+  const inputs: string[] = []
+  for (const vp of videoPaths) {
+    inputs.push('-i', vp)
+  }
+  const musicIdx = videoPaths.length
+  inputs.push('-i', musicPath)
   for (let i = 0; i < cutCount; i++) {
     inputs.push('-i', path.join(sfxDir, `whoosh-${(i % 3) + 1}.mp3`))
   }
@@ -191,14 +193,12 @@ export async function composeMusicAd(
 
   // ── VIDEO ──────────────────────────────────────────────────────────────────
 
-  f.push(`[0:v]split=${n}${range(n).map(i => `[v${i}]`).join('')}`)
-
   for (let i = 0; i < n; i++) {
-    const { videoStart, videoEnd, textOverlay } = cuts[i]
+    const { clipIndex, videoStart, videoEnd, textOverlay } = cuts[i]
     const dur = (videoEnd - videoStart).toFixed(3)
 
     let chain =
-      `[v${i}]trim=start=${videoStart.toFixed(3)}:duration=${dur},setpts=PTS-STARTPTS`
+      `[${clipIndex}:v]trim=start=${videoStart.toFixed(3)}:duration=${dur},setpts=PTS-STARTPTS`
 
     if (textOverlay) {
       const safe = textOverlay.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:')
@@ -222,7 +222,7 @@ export async function composeMusicAd(
   // ── AUDIO ──────────────────────────────────────────────────────────────────
 
   f.push(
-    `[1:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,` +
+    `[${musicIdx}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,` +
     `stereotools=slev=1.8[music_wide]`
   )
 
@@ -232,7 +232,7 @@ export async function composeMusicAd(
   for (let i = 0; i < cutCount; i++) {
     cumulativeSecs += cuts[i].videoEnd - cuts[i].videoStart
     const delayMs  = Math.max(0, Math.round(cumulativeSecs * 1000) - 100)
-    const sfxInput = 2 + i
+    const sfxInput = videoPaths.length + 1 + i
     const sfxLabel = `sfx${i}`
     const pan = i % 2 === 0
       ? 'pan=stereo|c0=2*c0'
@@ -242,13 +242,7 @@ export async function composeMusicAd(
     sfxLabels.push(`[${sfxLabel}]`)
   }
 
-  const ambientLabels: string[] = []
-  if (!audioAnalysis.hasSpeech) {
-    f.push(`[0:a]volume=0.1[ambient]`)
-    ambientLabels.push('[ambient]')
-  }
-
-  const mixStreams = ['[music_wide]', ...sfxLabels, ...ambientLabels]
+  const mixStreams = ['[music_wide]', ...sfxLabels]
   f.push(
     `${mixStreams.join('')}amix=inputs=${mixStreams.length}:duration=first:normalize=0[a]`
   )

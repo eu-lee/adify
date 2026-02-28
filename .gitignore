@@ -46,3 +46,4 @@ Thumbs.db
 
 # Temp files written during generation
 /tmp/
+.tmp/

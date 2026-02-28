@@ -1,4 +1,5 @@
 export interface Cut {
+  clipIndex: number
   videoStart: number
   videoEnd: number
   textOverlay?: string | null

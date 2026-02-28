@@ -7,6 +7,11 @@ import { MOCK_PRODUCTS } from '@/data/products'
 import { hasAd, saveAd, removeAd, getStoreAds } from '@/lib/adStore'
 import { supabase } from '@/lib/supabase'
 
+function base64ToBlob(b64: string, mime: string): Blob {
+  const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0))
+  return new Blob([bytes], { type: mime })
+}
+
 interface Product {
   id: string | number
   title: string
@@ -124,8 +129,9 @@ function ExpandedAdView({ product, storeDomain, hasVideo = false, onClose, onAdC
 }) {
   const [adType, setAdType] = useState<'narrated' | 'music_only'>('narrated')
   const [duration, setDuration] = useState<15 | 30 | 60>(30)
-  const [formStatus, setFormStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
+  const [formStatus, setFormStatus] = useState<'idle' | 'analyzing' | 'generating_audio' | 'composing' | 'done' | 'error'>('idle')
   const [errorMsg, setErrorMsg] = useState('')
+  const [adVideoUrl, setAdVideoUrl] = useState<string | null>(null)
 
   // B-roll state
   const [brollLibrary, setBrollLibrary] = useState<{ name: string; url: string }[]>([])
@@ -164,6 +170,12 @@ function ExpandedAdView({ product, storeDomain, hasVideo = false, onClose, onAdC
 
   useEffect(() => { refreshBrollLibrary() }, [numericId]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    return () => {
+      if (adVideoUrl) URL.revokeObjectURL(adVideoUrl)
+    }
+  }, [adVideoUrl])
+
   async function handleBrollUpload(file: File) {
     if (!file.type.startsWith('video/')) return
     setBrollError(null)
@@ -196,22 +208,85 @@ function ExpandedAdView({ product, storeDomain, hasVideo = false, onClose, onAdC
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!selectedBroll) return
-    setFormStatus('loading')
     setErrorMsg('')
+
     try {
+      // ── Step 1: Fetch b-roll blob (needed for later steps too) ──────────────
+      setFormStatus('analyzing')
       const videoRes = await fetch(selectedBroll.url)
       const videoBlob = await videoRes.blob()
+
+      // ── Step 2: Analyze video ───────────────────────────────────────────────
       const fd = new FormData()
       fd.append('video', videoBlob, `${numericId}.mp4`)
       fd.append('product', JSON.stringify({ title: product.title, description: product.description ?? product.title, price: product.price ?? '$0' }))
       fd.append('adType', adType)
       fd.append('duration', String(duration))
-      const res = await fetch('/api/analyze-video', { method: 'POST', body: fd })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error ?? `Server error ${res.status}`)
-      saveAd(storeDomain, product.id, { productTitle: product.title, adType, duration, ...data })
-      setFormStatus('done')
+      const analyzeRes = await fetch('/api/analyze-video', { method: 'POST', body: fd })
+      const analyzeData = await analyzeRes.json()
+      if (!analyzeRes.ok) throw new Error(analyzeData.error ?? `Server error ${analyzeRes.status}`)
+
+      const { mood, bpm: analyzedBpm, sentences: analyzedSentences, voice, audioAnalysis, cuts } = analyzeData
+
+      // ── Step 3: Generate audio ──────────────────────────────────────────────
+      setFormStatus('generating_audio')
+
+      let narrationBlob: Blob | null = null
+      let chunkDurations: number[] = []
+
+      if (adType === 'narrated') {
+        const audioRes = await fetch('/api/generate-audio', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sentences: analyzedSentences.map((s: { text: string }) => s.text), voiceId: voice?.elevenlabs_voice_id, segmentDurations: analyzedSentences.map((s: { estimatedDurationSec: number }) => s.estimatedDurationSec) }),
+        })
+        const audioData = await audioRes.json()
+        if (!audioRes.ok) throw new Error(audioData.error ?? `Server error ${audioRes.status}`)
+        const { chunks, fullAudioBase64 } = audioData
+        narrationBlob = base64ToBlob(fullAudioBase64, 'audio/mpeg')
+        chunkDurations = (chunks as Array<{ durationMs: number }>).map(c => c.durationMs)
+      }
+
+      const musicRes = await fetch('/api/generate-music', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mood, durationSeconds: duration }),
+      })
+      if (!musicRes.ok) {
+        const musicErr = await musicRes.json()
+        throw new Error(musicErr.error ?? `Server error ${musicRes.status}`)
+      }
+      const musicBlob = await musicRes.blob()
+
+      // ── Step 4: Compose video ───────────────────────────────────────────────
+      setFormStatus('composing')
+
+      const composeFd = new FormData()
+      composeFd.append('video', videoBlob, `${numericId}.mp4`)
+      composeFd.append('music', musicBlob, 'music.wav')
+      composeFd.append('adType', adType)
+      composeFd.append('audioAnalysis', JSON.stringify(audioAnalysis))
+
+      if (adType === 'narrated') {
+        composeFd.append('narration', narrationBlob!, 'narration.mp3')
+        composeFd.append('cutList', JSON.stringify(analyzedSentences))
+        composeFd.append('chunkDurations', JSON.stringify(chunkDurations))
+      } else {
+        composeFd.append('cutList', JSON.stringify(cuts))
+        composeFd.append('bpm', String(analyzedBpm))
+      }
+
+      const composeRes = await fetch('/api/compose-video', { method: 'POST', body: composeFd })
+      if (!composeRes.ok) {
+        const composeErr = await composeRes.json()
+        throw new Error(composeErr.error ?? `Server error ${composeRes.status}`)
+      }
+      const outputBlob = await composeRes.blob()
+      const url = URL.createObjectURL(outputBlob)
+      setAdVideoUrl(url)
+      saveAd(storeDomain, product.id, { productTitle: product.title, adType, duration, ...analyzeData })
       onAdChange?.()
+      setFormStatus('done')
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err))
       setFormStatus('error')
@@ -399,51 +474,90 @@ function ExpandedAdView({ product, storeDomain, hasVideo = false, onClose, onAdC
             </div>
 
             {/* Form */}
-            {formStatus === 'done' ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'rgba(251,191,36,0.8)', boxShadow: '0 0 6px rgba(251,191,36,0.4)', flexShrink: 0 }} />
-                  <span className="font-sans" style={{ fontSize: '0.8125rem', color: 'rgba(251,191,36,0.8)', fontWeight: 400 }}>Ad generated successfully</span>
-                </div>
-                <button onClick={onClose} className="btn-primary font-sans" style={{ alignSelf: 'flex-start' }}>Done</button>
-              </div>
-            ) : (
-              <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                <div style={{ display: 'flex', gap: '32px', flexWrap: 'wrap' }}>
-                  <div>
-                    <p className="font-sans" style={{ fontSize: '0.6875rem', color: '#555', fontWeight: 400, letterSpacing: '0.08em', textTransform: 'uppercase', margin: '0 0 8px' }}>Ad Type</p>
-                    <div style={{ display: 'flex', gap: '6px' }}>
-                      {pill('Narrated', adType === 'narrated', () => setAdType('narrated'))}
-                      {pill('Music Only', adType === 'music_only', () => setAdType('music_only'))}
+            {(() => {
+              const isLoading = formStatus === 'analyzing' || formStatus === 'generating_audio' || formStatus === 'composing'
+              if (formStatus === 'done') {
+                return (
+                  <>
+                    {adVideoUrl && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                        <video
+                          controls
+                          src={adVideoUrl}
+                          style={{ width: '100%', borderRadius: '8px', background: '#000' }}
+                        />
+                        <div style={{ display: 'flex', gap: '12px' }}>
+                          <a
+                            href={adVideoUrl}
+                            download="ad.mp4"
+                            className="btn-primary"
+                            style={{ flex: 1, textAlign: 'center', textDecoration: 'none' }}
+                          >
+                            Download
+                          </a>
+                          <button
+                            className="btn-secondary"
+                            onClick={() => setFormStatus('idle')}
+                            style={{ flex: 1 }}
+                          >
+                            Done
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {!adVideoUrl && (
+                      <button className="btn-secondary" onClick={() => setFormStatus('idle')}>
+                        Done
+                      </button>
+                    )}
+                  </>
+                )
+              }
+              return (
+                <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                  <div style={{ display: 'flex', gap: '32px', flexWrap: 'wrap' }}>
+                    <div>
+                      <p className="font-sans" style={{ fontSize: '0.6875rem', color: '#555', fontWeight: 400, letterSpacing: '0.08em', textTransform: 'uppercase', margin: '0 0 8px' }}>Ad Type</p>
+                      <div style={{ display: 'flex', gap: '6px' }}>
+                        {pill('Narrated', adType === 'narrated', () => setAdType('narrated'))}
+                        {pill('Music Only', adType === 'music_only', () => setAdType('music_only'))}
+                      </div>
+                    </div>
+                    <div>
+                      <p className="font-sans" style={{ fontSize: '0.6875rem', color: '#555', fontWeight: 400, letterSpacing: '0.08em', textTransform: 'uppercase', margin: '0 0 8px' }}>Duration</p>
+                      <div style={{ display: 'flex', gap: '6px' }}>
+                        {([15, 30, 60] as const).map(d => pill(`${d}s`, duration === d, () => setDuration(d)))}
+                      </div>
                     </div>
                   </div>
-                  <div>
-                    <p className="font-sans" style={{ fontSize: '0.6875rem', color: '#555', fontWeight: 400, letterSpacing: '0.08em', textTransform: 'uppercase', margin: '0 0 8px' }}>Duration</p>
-                    <div style={{ display: 'flex', gap: '6px' }}>
-                      {([15, 30, 60] as const).map(d => pill(`${d}s`, duration === d, () => setDuration(d)))}
-                    </div>
-                  </div>
-                </div>
 
-                {formStatus === 'error' && errorMsg && (
-                  <p className="font-sans" style={{ fontSize: '0.75rem', color: 'rgba(251,113,133,0.85)', fontWeight: 300, margin: 0 }}>{errorMsg}</p>
-                )}
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                  <button
-                    type="submit"
-                    disabled={!selectedBroll || formStatus === 'loading'}
-                    className="btn-primary font-sans"
-                    style={{ opacity: !selectedBroll || formStatus === 'loading' ? 0.5 : 1, cursor: !selectedBroll || formStatus === 'loading' ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
-                  >
-                    {formStatus === 'loading' ? <><Spinner /> Analyzing video…</> : 'Generate Ad →'}
-                  </button>
-                  {formStatus === 'loading' && (
-                    <span className="font-sans" style={{ fontSize: '0.6875rem', color: '#333', fontWeight: 300 }}>Gemini is watching your video — this takes 20–60s</span>
+                  {formStatus === 'error' && errorMsg && (
+                    <p className="font-sans" style={{ fontSize: '0.75rem', color: 'rgba(251,113,133,0.85)', fontWeight: 300, margin: 0 }}>{errorMsg}</p>
                   )}
-                </div>
-              </form>
-            )}
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                    <button
+                      type="submit"
+                      disabled={!selectedBroll || isLoading}
+                      className="btn-primary font-sans"
+                      style={{ opacity: !selectedBroll || isLoading ? 0.5 : 1, cursor: !selectedBroll || isLoading ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
+                    >
+                      {isLoading ? (
+                        <>
+                          <Spinner />
+                          {formStatus === 'analyzing' && 'Analyzing video...'}
+                          {formStatus === 'generating_audio' && 'Generating audio...'}
+                          {formStatus === 'composing' && 'Composing video...'}
+                        </>
+                      ) : 'Generate Ad →'}
+                    </button>
+                    {isLoading && (
+                      <span className="font-sans" style={{ fontSize: '0.6875rem', color: '#333', fontWeight: 300 }}>Gemini is watching your video — this takes 20–60s</span>
+                    )}
+                  </div>
+                </form>
+              )
+            })()}
           </div>
 
           {/* Right: trend graph */}
@@ -591,7 +705,7 @@ function ProductCard({ product, rank, hasStorefrontData, storeDomain, onExpand, 
 
   function handleCardClick(e: React.MouseEvent) {
     // Don't expand if clicking the Remove button (handled by stopPropagation there)
-    if (isSoldOut || adExists) return
+    if (isSoldOut) return
     onExpand(product)
   }
 
@@ -605,8 +719,8 @@ function ProductCard({ product, rank, hasStorefrontData, storeDomain, onExpand, 
       className="card-product"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      onClick={() => !isSoldOut && !adExists && onExpand(product)}
-      style={{ display: 'flex', flexDirection: 'column', opacity: isSoldOut ? 0.5 : 1, cursor: isSoldOut || adExists ? 'default' : 'pointer' }}
+      onClick={() => !isSoldOut && onExpand(product)}
+      style={{ display: 'flex', flexDirection: 'column', opacity: isSoldOut ? 0.5 : 1, cursor: isSoldOut ? 'default' : 'pointer' }}
     >
       {/* Image */}
       <div style={{ width: '100%', aspectRatio: '6/5', overflow: 'hidden', background: '#0f0f0f', flexShrink: 0, position: 'relative' }}>
