@@ -17,7 +17,7 @@ const dmSans = DM_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "Sonance",
+  title: "adify",
   description: "AI-powered audio ads for your Shopify store.",
 };
 
