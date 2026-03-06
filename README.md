@@ -4,6 +4,8 @@ AI-powered video ad generator for Shopify merchants. Paste a store URL, pick a p
 
 Adify analyzes your product video with Google Gemini, writes a script that matches what's on screen, generates a professional voiceover, composes mood-matched background music, and assembles everything into a polished vertical video with broadcast-quality audio mixing.
 
+[Devpost](https://devpost.com/software/adify)
+
 ### Key Features
 
 - **Two ad formats** — Narrated ads (AI voiceover + ducked music) and Music-Only ads (beat-synced cuts + text overlays)
